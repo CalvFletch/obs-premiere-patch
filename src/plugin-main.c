@@ -22,12 +22,22 @@ static void on_frontend_event(enum obs_frontend_event event, void *unused)
 	(void)unused;
 	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED)
 		mp_on_recording_stopped();
+	else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
+		mp_on_obs_loaded();
+}
+
+static void open_fix_folder_cb(void *unused)
+{
+	(void)unused;
+	mp_open_fix_folder_dialog();
 }
 
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "[obs-marker-patch] module load");
 	obs_frontend_add_event_callback(on_frontend_event, NULL);
+	obs_frontend_add_tools_menu_item("Marker Patch - Fix Folder...",
+	                                 open_fix_folder_cb, NULL);
 	mp_start();
 	return true;
 }

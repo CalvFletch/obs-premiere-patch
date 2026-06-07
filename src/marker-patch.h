@@ -7,6 +7,8 @@ extern "C" {
 void mp_start(void);
 void mp_stop(void);
 void mp_on_recording_stopped(void);
+void mp_on_obs_loaded(void);
+void mp_open_fix_folder_dialog(void);
 
 #ifdef __cplusplus
 }

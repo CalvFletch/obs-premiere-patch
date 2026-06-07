@@ -1,14 +1,13 @@
 /*
  * obs-marker-patch  —  marker-patch.cpp
  *
- * On OBS_FRONTEND_EVENT_RECORDING_STOPPED:
- *   1. Get MP4 path from the recording output
- *   2. Wait for hybrid-MP4 remux to finish (file size stable)
- *   3. Read QuickTime chapter atoms via exiftool
- *   4. Build Premiere Pro-compatible XMP packet
- *   5. Inject XMP in-place with exiftool (-overwrite_original)
+ * Three operation modes:
+ *   A. Recording stopped  → wait for hybrid-MP4 remux, inject XMP
+ *   B. Startup scan       → remux orphaned MKVs + inject XMP
+ *   C. Manual folder fix  → Tools menu → folder picker → process all MP4/MKV
  *
  * Requires: exiftool  (winget install OliverBetz.ExifTool)
+ *           ffmpeg    (bundled with OBS, used for MKV remux)
  */
 
 #include "marker-patch.h"
@@ -16,9 +15,12 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
+#include <util/config-file.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <shlobj.h>
+#include <shobjidl.h>
 
 #include <string>
 #include <vector>
@@ -130,7 +132,54 @@ static std::string find_exiftool()
 }
 
 // ---------------------------------------------------------------------------
-// Wait for file to stabilise (remux done)
+// Find ffmpeg  (bundled with OBS at <obs_root>\bin\64bit\ffmpeg.exe)
+// ---------------------------------------------------------------------------
+
+static std::string s_ffmpeg_cache;
+
+static std::string find_ffmpeg()
+{
+	if (!s_ffmpeg_cache.empty())
+		return s_ffmpeg_cache;
+
+	// Derive obs root from plugin DLL path:
+	// ...\obs-studio\obs-plugins\64bit\obs-marker-patch.dll
+	// →  ...\obs-studio\bin\64bit\ffmpeg.exe
+	const char *mod_bin =
+		obs_get_module_binary_path(obs_current_module());
+	if (mod_bin) {
+		std::string p = mod_bin;
+		size_t      a = p.rfind('\\');
+		if (a != std::string::npos) {
+			size_t b = p.rfind('\\', a - 1);
+			if (b != std::string::npos) {
+				size_t c = p.rfind('\\', b - 1);
+				if (c != std::string::npos) {
+					std::string root = p.substr(0, c);
+					std::string cand =
+						root +
+						"\\bin\\64bit\\ffmpeg.exe";
+					if (GetFileAttributesA(cand.c_str()) !=
+					    INVALID_FILE_ATTRIBUTES) {
+						s_ffmpeg_cache = cand;
+						return s_ffmpeg_cache;
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: PATH
+	std::string v = run_capture("ffmpeg -version 2>&1");
+	if (v.find("ffmpeg version") != std::string::npos) {
+		s_ffmpeg_cache = "ffmpeg";
+		return s_ffmpeg_cache;
+	}
+	return "";
+}
+
+// ---------------------------------------------------------------------------
+// Wait for file to stabilise (hybrid-MP4 remux running)
 // ---------------------------------------------------------------------------
 
 static void wait_for_stable(const std::string &path, int timeout_sec)
@@ -138,7 +187,7 @@ static void wait_for_stable(const std::string &path, int timeout_sec)
 	LARGE_INTEGER prev  = {};
 	int           same  = 0;
 	int           ticks = 0;
-	const int     max   = timeout_sec * 2; // 500 ms steps
+	const int     max   = timeout_sec * 2;
 
 	while (ticks < max) {
 		Sleep(500);
@@ -154,7 +203,7 @@ static void wait_for_stable(const std::string &path, int timeout_sec)
 		cur.LowPart  = info.nFileSizeLow;
 
 		if (cur.QuadPart > 0 && cur.QuadPart == prev.QuadPart) {
-			if (++same >= 4) // 2 seconds identical → done
+			if (++same >= 4)
 				return;
 		} else {
 			same = 0;
@@ -165,10 +214,6 @@ static void wait_for_stable(const std::string &path, int timeout_sec)
 
 // ---------------------------------------------------------------------------
 // Chapter parsing  (exiftool -j -QuickTime:ChapterList output)
-//
-// exiftool emits ChapterList as a JSON array of strings:
-//   "ChapterList": ["00:00:00 Intro", "00:05:30 Scene 2"]
-// Each entry: "HH:MM:SS[.sss] Name"
 // ---------------------------------------------------------------------------
 
 struct Chapter {
@@ -238,7 +283,7 @@ static std::vector<Chapter> parse_chapters(const std::string &json)
 }
 
 // ---------------------------------------------------------------------------
-// Get MP4 video timescale  (usually 90000 for standard MP4)
+// Get MP4 video timescale
 // ---------------------------------------------------------------------------
 
 static double get_timescale(const std::string &exiftool,
@@ -260,14 +305,11 @@ static double get_timescale(const std::string &exiftool,
 				return ts;
 		}
 	}
-	return 90000.0; // safe default
+	return 90000.0;
 }
 
 // ---------------------------------------------------------------------------
-// Build XMP packet
-//
-// Premiere Pro reads xmpDM:markers with startTime as integer ticks
-// at the file's native timescale (usually 90000 Hz for MP4).
+// Build XMP packet  (Premiere Pro xmpDM:markers)
 // ---------------------------------------------------------------------------
 
 static std::string xml_escape(const std::string &s)
@@ -291,8 +333,6 @@ static std::string build_xmp(const std::vector<Chapter> &chapters,
                               double                      timescale)
 {
 	std::ostringstream x;
-
-	// XMP packet header
 	x << "<?xpacket begin=\"\xef\xbb\xbf\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
 	     "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"\n"
 	     "           x:xmptk=\"obs-marker-patch\">\n"
@@ -303,8 +343,8 @@ static std::string build_xmp(const std::vector<Chapter> &chapters,
 	     "    <rdf:Seq>\n";
 
 	for (const auto &ch : chapters) {
-		long long ticks =
-			static_cast<long long>(std::round(ch.time_sec * timescale));
+		long long ticks = static_cast<long long>(
+			std::round(ch.time_sec * timescale));
 		x << "     <rdf:li rdf:parseType=\"Resource\">\n"
 		     "      <xmpDM:startTime>"
 		  << ticks
@@ -335,21 +375,20 @@ static bool inject_xmp(const std::string &exiftool,
                         const std::string &mp4_path,
                         const std::string &xmp_content)
 {
-	// Write XMP to a temp file
 	char tmp_dir[MAX_PATH];
 	GetTempPathA(MAX_PATH, tmp_dir);
-	std::string tmp_xmp =
-		std::string(tmp_dir) + "obs_marker_patch_tmp.xmp";
+
+	// Per-thread temp file to allow concurrent processing
+	std::string tmp_xmp = std::string(tmp_dir) + "obs_mp_" +
+	                      std::to_string(GetCurrentThreadId()) + ".xmp";
 
 	{
-		std::ofstream f(tmp_xmp, std::ios::binary);
+		std::ofstream f(tmp_xmp, std::ios::binary | std::ios::trunc);
 		if (!f)
 			return false;
 		f << xmp_content;
 	}
 
-	// exiftool: clear existing XMP, write ours from temp file
-	// -xmp<= reads XMP from a file and embeds it
 	std::string cmd = "\"" + exiftool +
 	                  "\" -overwrite_original"
 	                  " -api LargeFileSupport=1"
@@ -362,16 +401,44 @@ static bool inject_xmp(const std::string &exiftool,
 }
 
 // ---------------------------------------------------------------------------
-// Core patch logic  (runs in background thread)
+// Remux MKV → MP4 via bundled ffmpeg
+// Returns output .mp4 path, or empty on failure
 // ---------------------------------------------------------------------------
 
-static void patch_recording(std::string path)
+static std::string remux_mkv(const std::string &mkv_path)
 {
-	obs_log(LOG_INFO, "[obs-marker-patch] Monitoring: %s", path.c_str());
+	std::string ffmpeg = find_ffmpeg();
+	if (ffmpeg.empty()) {
+		obs_log(LOG_WARNING,
+		        "[obs-marker-patch] ffmpeg not found, cannot remux %s",
+		        mkv_path.c_str());
+		return "";
+	}
 
-	// Hybrid MP4 remuxes after stop — wait for the file to stabilise
-	wait_for_stable(path, 60);
+	std::string mp4_path =
+		mkv_path.substr(0, mkv_path.size() - 4) + ".mp4";
 
+	std::string cmd = "\"" + ffmpeg + "\" -y -i \"" + mkv_path +
+	                  "\" -c copy \"" + mp4_path + "\"";
+
+	obs_log(LOG_INFO, "[obs-marker-patch] Remuxing: %s",
+	        mkv_path.c_str());
+	int ret = run_wait(cmd);
+	if (ret != 0) {
+		obs_log(LOG_ERROR,
+		        "[obs-marker-patch] ffmpeg failed (code %d): %s",
+		        ret, mkv_path.c_str());
+		return "";
+	}
+	return mp4_path;
+}
+
+// ---------------------------------------------------------------------------
+// patch_mp4: shared pipeline — read chapters from MP4, inject XMP
+// ---------------------------------------------------------------------------
+
+static void patch_mp4(const std::string &path)
+{
 	std::string exiftool = find_exiftool();
 	if (exiftool.empty()) {
 		obs_log(LOG_WARNING,
@@ -380,7 +447,6 @@ static void patch_recording(std::string path)
 		return;
 	}
 
-	// Read chapters from MP4
 	std::string cmd = "\"" + exiftool +
 	                  "\" -j -api LargeFileSupport=1"
 	                  " -QuickTime:ChapterList"
@@ -391,13 +457,10 @@ static void patch_recording(std::string path)
 
 	if (chapters.empty()) {
 		obs_log(LOG_INFO,
-		        "[obs-marker-patch] No chapters in %s — nothing to do",
+		        "[obs-marker-patch] No chapters in %s — skipping",
 		        path.c_str());
 		return;
 	}
-
-	obs_log(LOG_INFO, "[obs-marker-patch] Found %zu chapter(s)",
-	        chapters.size());
 
 	double      ts  = get_timescale(exiftool, path);
 	std::string xmp = build_xmp(chapters, ts);
@@ -409,14 +472,21 @@ static void patch_recording(std::string path)
 		        chapters.size(), ts, path.c_str());
 	} else {
 		obs_log(LOG_ERROR,
-		        "[obs-marker-patch] exiftool injection failed for %s",
+		        "[obs-marker-patch] XMP injection failed for %s",
 		        path.c_str());
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Get MP4 path from the active recording output
+// Mode A: recording-stopped — wait for remux, patch MP4
 // ---------------------------------------------------------------------------
+
+static void patch_recording(std::string path)
+{
+	obs_log(LOG_INFO, "[obs-marker-patch] Monitoring: %s", path.c_str());
+	wait_for_stable(path, 60);
+	patch_mp4(path);
+}
 
 static std::string get_recording_path()
 {
@@ -425,15 +495,160 @@ static std::string get_recording_path()
 		return "";
 
 	obs_data_t *settings = obs_output_get_settings(rec);
-
-	// ffmpeg_muxer uses "url"; simple output uses "path"
-	const char *url  = obs_data_get_string(settings, "url");
-	const char *path = obs_data_get_string(settings, "path");
-	std::string file = (url && *url) ? url : (path ? path : "");
-
+	const char *url      = obs_data_get_string(settings, "url");
+	const char *path     = obs_data_get_string(settings, "path");
+	std::string file     = (url && *url) ? url : (path ? path : "");
 	obs_data_release(settings);
 	obs_output_release(rec);
 	return file;
+}
+
+// ---------------------------------------------------------------------------
+// Mode B: startup scan — remux orphaned MKVs + inject XMP
+// rec_folder is collected on the main thread before spawning
+// ---------------------------------------------------------------------------
+
+static void startup_scan(const std::string &folder)
+{
+	obs_log(LOG_INFO, "[obs-marker-patch] Startup scan: %s",
+	        folder.c_str());
+
+	std::string      pattern = folder + "\\*.mkv";
+	WIN32_FIND_DATAA fd;
+	HANDLE           hf = FindFirstFileA(pattern.c_str(), &fd);
+	if (hf == INVALID_HANDLE_VALUE) {
+		obs_log(LOG_INFO,
+		        "[obs-marker-patch] Startup scan: no MKVs found");
+		return;
+	}
+
+	std::vector<std::string> orphans;
+	do {
+		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			continue;
+		std::string mkv_name = fd.cFileName;
+		std::string mp4_name =
+			mkv_name.substr(0, mkv_name.size() - 4) + ".mp4";
+		std::string mp4_full = folder + "\\" + mp4_name;
+		if (GetFileAttributesA(mp4_full.c_str()) ==
+		    INVALID_FILE_ATTRIBUTES)
+			orphans.push_back(folder + "\\" + mkv_name);
+	} while (FindNextFileA(hf, &fd));
+	FindClose(hf);
+
+	if (orphans.empty()) {
+		obs_log(LOG_INFO,
+		        "[obs-marker-patch] Startup scan: no orphaned MKVs");
+		return;
+	}
+
+	obs_log(LOG_INFO,
+	        "[obs-marker-patch] Startup scan: %zu orphaned MKV(s) found",
+	        orphans.size());
+	for (const auto &mkv : orphans) {
+		std::string mp4 = remux_mkv(mkv);
+		if (!mp4.empty())
+			patch_mp4(mp4);
+	}
+	obs_log(LOG_INFO, "[obs-marker-patch] Startup scan complete");
+}
+
+// ---------------------------------------------------------------------------
+// Mode C: manual folder fix
+// ---------------------------------------------------------------------------
+
+static void fix_folder_worker(std::string folder)
+{
+	obs_log(LOG_INFO, "[obs-marker-patch] Fix folder: %s",
+	        folder.c_str());
+	int processed = 0;
+
+	// MP4 files: inject XMP from existing chapter atoms
+	{
+		std::string      pat = folder + "\\*.mp4";
+		WIN32_FIND_DATAA fd;
+		HANDLE           hf = FindFirstFileA(pat.c_str(), &fd);
+		if (hf != INVALID_HANDLE_VALUE) {
+			do {
+				if (fd.dwFileAttributes &
+				    FILE_ATTRIBUTE_DIRECTORY)
+					continue;
+				patch_mp4(folder + "\\" + fd.cFileName);
+				processed++;
+			} while (FindNextFileA(hf, &fd));
+			FindClose(hf);
+		}
+	}
+
+	// MKV files: remux → MP4 → inject XMP
+	{
+		std::string      pat = folder + "\\*.mkv";
+		WIN32_FIND_DATAA fd;
+		HANDLE           hf = FindFirstFileA(pat.c_str(), &fd);
+		if (hf != INVALID_HANDLE_VALUE) {
+			do {
+				if (fd.dwFileAttributes &
+				    FILE_ATTRIBUTE_DIRECTORY)
+					continue;
+				std::string mkv = folder + "\\" + fd.cFileName;
+				std::string mp4 = remux_mkv(mkv);
+				if (!mp4.empty()) {
+					patch_mp4(mp4);
+					processed++;
+				}
+			} while (FindNextFileA(hf, &fd));
+			FindClose(hf);
+		}
+	}
+
+	obs_log(LOG_INFO,
+	        "[obs-marker-patch] Fix folder done: %d file(s) processed",
+	        processed);
+}
+
+// IFileOpenDialog folder picker — runs on OBS main thread (COM already init'd)
+static std::string pick_folder()
+{
+	std::string      result;
+	IFileOpenDialog *pfd = nullptr;
+
+	HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL,
+	                               CLSCTX_INPROC_SERVER,
+	                               IID_PPV_ARGS(&pfd));
+	if (FAILED(hr))
+		return result;
+
+	DWORD opts = 0;
+	pfd->GetOptions(&opts);
+	pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST |
+	                FOS_FORCEFILESYSTEM);
+	pfd->SetTitle(L"Select folder to patch markers");
+
+	hr = pfd->Show(NULL);
+	if (SUCCEEDED(hr)) {
+		IShellItem *item = nullptr;
+		hr = pfd->GetResult(&item);
+		if (SUCCEEDED(hr)) {
+			PWSTR wpath = nullptr;
+			if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
+			                                   &wpath))) {
+				int n = WideCharToMultiByte(
+					CP_UTF8, 0, wpath, -1, NULL, 0, NULL,
+					NULL);
+				if (n > 0) {
+					std::vector<char> buf(n);
+					WideCharToMultiByte(CP_UTF8, 0, wpath,
+					                    -1, buf.data(), n,
+					                    NULL, NULL);
+					result = buf.data();
+				}
+				CoTaskMemFree(wpath);
+			}
+			item->Release();
+		}
+	}
+	pfd->Release();
+	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -453,26 +668,59 @@ void mp_stop(void)
 void mp_on_recording_stopped(void)
 {
 	std::string path = get_recording_path();
-
 	if (path.empty()) {
 		obs_log(LOG_WARNING,
 		        "[obs-marker-patch] Could not determine recording path");
 		return;
 	}
 
-	// Only process MP4 files (hybrid_mp4 output)
-	auto ends_with_mp4 = [](const std::string &s) {
+	auto ends_mp4 = [](const std::string &s) {
 		return s.size() >= 4 &&
 		       _stricmp(s.c_str() + s.size() - 4, ".mp4") == 0;
 	};
 
-	if (!ends_with_mp4(path)) {
+	if (!ends_mp4(path)) {
 		obs_log(LOG_INFO,
 		        "[obs-marker-patch] Not an MP4 (%s), skipping",
 		        path.c_str());
 		return;
 	}
 
-	// Detach so we don't block the OBS event thread
 	std::thread([path]() { patch_recording(path); }).detach();
 }
+
+void mp_on_obs_loaded(void)
+{
+	// Collect profile config on the main thread before spawning
+	std::string rec_folder;
+
+	config_t *profile = obs_frontend_get_profile_config();
+	if (profile) {
+		const char *fmt =
+			config_get_string(profile, "AdvOut", "RecFormat2");
+		if (fmt && _stricmp(fmt, "hybrid_mp4") == 0) {
+			const char *p = config_get_string(profile, "AdvOut",
+			                                   "RecFilePath");
+			if (p && *p)
+				rec_folder = p;
+		}
+	}
+
+	if (rec_folder.empty())
+		return;
+
+	std::thread([rec_folder]() {
+		Sleep(2000);
+		startup_scan(rec_folder);
+	}).detach();
+}
+
+void mp_open_fix_folder_dialog(void)
+{
+	std::string folder = pick_folder();
+	if (folder.empty())
+		return;
+
+	std::thread([folder]() { fix_folder_worker(folder); }).detach();
+}
+
