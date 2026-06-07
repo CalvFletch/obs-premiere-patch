@@ -731,18 +731,39 @@ void mp_install_exiftool(void)
 	if (!ver.empty() && ver[0] >= '1' && ver[0] <= '9') {
 		std::string msg = "exiftool is already installed (version " +
 		                  ver.substr(0, ver.find('\n')) + ")";
-		MessageBoxA(NULL, msg.c_str(), "Marker Patch", MB_OK | MB_ICONINFORMATION);
+		MessageBoxA(NULL, msg.c_str(), "Marker Patch",
+		            MB_OK | MB_ICONINFORMATION);
 		return;
 	}
 
-	// winget not guaranteed — check for it
-	std::string wg = run_capture("winget --version");
-	if (wg.empty() || wg.find("v") == std::string::npos) {
+	// winget lives in %LOCALAPPDATA%\Microsoft\WindowsApps — not in
+	// the system PATH seen by CreateProcessA. Probe that path first.
+	std::string winget_path;
+	{
+		char local_app[MAX_PATH];
+		if (GetEnvironmentVariableA("LOCALAPPDATA", local_app,
+		                            MAX_PATH) > 0) {
+			std::string cand =
+				std::string(local_app) +
+				"\\Microsoft\\WindowsApps\\winget.exe";
+			if (GetFileAttributesA(cand.c_str()) !=
+			    INVALID_FILE_ATTRIBUTES)
+				winget_path = cand;
+		}
+	}
+	// Fallback: try plain "winget" (works if somehow in PATH)
+	if (winget_path.empty()) {
+		std::string wg = run_capture("winget --version");
+		if (!wg.empty() && wg.find("v") != std::string::npos)
+			winget_path = "winget";
+	}
+
+	if (winget_path.empty()) {
 		MessageBoxA(NULL,
 		            "winget (App Installer) not found.\n"
 		            "Install exiftool manually:\n"
 		            "  https://exiftool.org\n"
-		            "and place exiftool.exe in C:\\Windows\\",
+		            "Place exiftool.exe in C:\\Windows\\",
 		            "Marker Patch", MB_OK | MB_ICONWARNING);
 		return;
 	}
@@ -757,24 +778,26 @@ void mp_install_exiftool(void)
 		return;
 
 	// Launch winget in a visible console so the user can see progress
-	STARTUPINFOA si   = {};
-	si.cb             = sizeof(si);
+	std::string     cmd = "\"" + winget_path +
+	                      "\" install --id OliverBetz.ExifTool -e"
+	                      " --accept-package-agreements"
+	                      " --accept-source-agreements";
+	STARTUPINFOA    si  = {};
+	si.cb               = sizeof(si);
 	PROCESS_INFORMATION pi = {};
 
-	char cmd[] = "winget install --id OliverBetz.ExifTool -e --accept-package-agreements --accept-source-agreements";
-	if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NEW_CONSOLE,
-	                    NULL, NULL, &si, &pi)) {
+	if (!CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE,
+	                    CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
 		MessageBoxA(NULL, "Failed to launch winget.",
 		            "Marker Patch", MB_OK | MB_ICONERROR);
 		return;
 	}
 
-	// Wait for install to finish then check again
-	WaitForSingleObject(pi.hProcess, 120000);
+	WaitForSingleObject(pi.hProcess, 180000);
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 
-	// Bust the cache so find_exiftool re-probes
+	// Bust cache so find_exiftool re-probes
 	s_exiftool_cache.clear();
 
 	std::string ver2 = find_exiftool();
@@ -783,8 +806,8 @@ void mp_install_exiftool(void)
 		            "Marker Patch", MB_OK | MB_ICONINFORMATION);
 	} else {
 		MessageBoxA(NULL,
-		            "Installation may have completed but exiftool was\n"
-		            "not found in PATH. You may need to restart OBS.",
+		            "Installation may have completed but exiftool\n"
+		            "was not found in PATH yet. Try restarting OBS.",
 		            "Marker Patch", MB_OK | MB_ICONWARNING);
 	}
 }
