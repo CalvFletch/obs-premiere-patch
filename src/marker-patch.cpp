@@ -724,3 +724,68 @@ void mp_open_fix_folder_dialog(void)
 	std::thread([folder]() { fix_folder_worker(folder); }).detach();
 }
 
+void mp_install_exiftool(void)
+{
+	// Check if already installed
+	std::string ver = run_capture("exiftool -ver");
+	if (!ver.empty() && ver[0] >= '1' && ver[0] <= '9') {
+		std::string msg = "exiftool is already installed (version " +
+		                  ver.substr(0, ver.find('\n')) + ")";
+		MessageBoxA(NULL, msg.c_str(), "Marker Patch", MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	// winget not guaranteed — check for it
+	std::string wg = run_capture("winget --version");
+	if (wg.empty() || wg.find("v") == std::string::npos) {
+		MessageBoxA(NULL,
+		            "winget (App Installer) not found.\n"
+		            "Install exiftool manually:\n"
+		            "  https://exiftool.org\n"
+		            "and place exiftool.exe in C:\\Windows\\",
+		            "Marker Patch", MB_OK | MB_ICONWARNING);
+		return;
+	}
+
+	int choice = MessageBoxA(NULL,
+	                          "exiftool is not installed.\n\n"
+	                          "Install it now via winget?\n"
+	                          "(A console window will open briefly.)",
+	                          "Marker Patch - Install exiftool",
+	                          MB_YESNO | MB_ICONQUESTION);
+	if (choice != IDYES)
+		return;
+
+	// Launch winget in a visible console so the user can see progress
+	STARTUPINFOA si   = {};
+	si.cb             = sizeof(si);
+	PROCESS_INFORMATION pi = {};
+
+	char cmd[] = "winget install --id OliverBetz.ExifTool -e --accept-package-agreements --accept-source-agreements";
+	if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NEW_CONSOLE,
+	                    NULL, NULL, &si, &pi)) {
+		MessageBoxA(NULL, "Failed to launch winget.",
+		            "Marker Patch", MB_OK | MB_ICONERROR);
+		return;
+	}
+
+	// Wait for install to finish then check again
+	WaitForSingleObject(pi.hProcess, 120000);
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+
+	// Bust the cache so find_exiftool re-probes
+	s_exiftool_cache.clear();
+
+	std::string ver2 = find_exiftool();
+	if (!ver2.empty()) {
+		MessageBoxA(NULL, "exiftool installed successfully!",
+		            "Marker Patch", MB_OK | MB_ICONINFORMATION);
+	} else {
+		MessageBoxA(NULL,
+		            "Installation may have completed but exiftool was\n"
+		            "not found in PATH. You may need to restart OBS.",
+		            "Marker Patch", MB_OK | MB_ICONWARNING);
+	}
+}
+

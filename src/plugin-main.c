@@ -32,12 +32,20 @@ static void open_fix_folder_cb(void *unused)
 	mp_open_fix_folder_dialog();
 }
 
+static void install_exiftool_cb(void *unused)
+{
+	(void)unused;
+	mp_install_exiftool();
+}
+
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "[obs-marker-patch] module load");
 	obs_frontend_add_event_callback(on_frontend_event, NULL);
 	obs_frontend_add_tools_menu_item("Marker Patch - Fix Folder...",
 	                                 open_fix_folder_cb, NULL);
+	obs_frontend_add_tools_menu_item("Marker Patch - Install exiftool...",
+	                                 install_exiftool_cb, NULL);
 	mp_start();
 	return true;
 }
