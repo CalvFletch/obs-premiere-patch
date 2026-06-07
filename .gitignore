@@ -1,0 +1,15 @@
+# Exclude everything
+/*
+
+# Except for default project files
+!/build-aux
+!/cmake
+!/src
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+
+# Exclude lock files
+*.lock.json
