@@ -736,64 +736,37 @@ void mp_install_exiftool(void)
 		return;
 	}
 
-	// winget lives in %LOCALAPPDATA%\Microsoft\WindowsApps — not in
-	// the system PATH seen by CreateProcessA. Probe that path first.
-	std::string winget_path;
-	{
-		char local_app[MAX_PATH];
-		if (GetEnvironmentVariableA("LOCALAPPDATA", local_app,
-		                            MAX_PATH) > 0) {
-			std::string cand =
-				std::string(local_app) +
-				"\\Microsoft\\WindowsApps\\winget.exe";
-			if (GetFileAttributesA(cand.c_str()) !=
-			    INVALID_FILE_ATTRIBUTES)
-				winget_path = cand;
-		}
-	}
-	// Fallback: try plain "winget" (works if somehow in PATH)
-	if (winget_path.empty()) {
-		std::string wg = run_capture("winget --version");
-		if (!wg.empty() && wg.find("v") != std::string::npos)
-			winget_path = "winget";
-	}
-
-	if (winget_path.empty()) {
-		MessageBoxA(NULL,
-		            "winget (App Installer) not found.\n"
-		            "Install exiftool manually:\n"
-		            "  https://exiftool.org\n"
-		            "Place exiftool.exe in C:\\Windows\\",
-		            "Marker Patch", MB_OK | MB_ICONWARNING);
-		return;
-	}
-
+	// Confirm before installing
 	int choice = MessageBoxA(NULL,
 	                          "exiftool is not installed.\n\n"
 	                          "Install it now via winget?\n"
-	                          "(A console window will open briefly.)",
+	                          "(A console window will open.)",
 	                          "Marker Patch - Install exiftool",
 	                          MB_YESNO | MB_ICONQUESTION);
 	if (choice != IDYES)
 		return;
 
-	// Launch winget in a visible console so the user can see progress
-	std::string     cmd = "\"" + winget_path +
-	                      "\" install --id OliverBetz.ExifTool -e"
-	                      " --accept-package-agreements"
-	                      " --accept-source-agreements";
-	STARTUPINFOA    si  = {};
-	si.cb               = sizeof(si);
+	// Launch via PowerShell so winget App Execution Alias resolves.
+	// 'pause' keeps the console open so the user can read the output.
+	std::string     cmd =
+		"powershell.exe -NoProfile -Command \""
+		"winget install --id OliverBetz.ExifTool -e "
+		"--accept-package-agreements --accept-source-agreements; "
+		"Write-Host ''; "
+		"Write-Host 'Press Enter to close...'; "
+		"Read-Host\"";
+	STARTUPINFOA    si = {};
+	si.cb              = sizeof(si);
 	PROCESS_INFORMATION pi = {};
 
 	if (!CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE,
 	                    CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
-		MessageBoxA(NULL, "Failed to launch winget.",
+		MessageBoxA(NULL, "Failed to launch PowerShell.",
 		            "Marker Patch", MB_OK | MB_ICONERROR);
 		return;
 	}
 
-	WaitForSingleObject(pi.hProcess, 180000);
+	WaitForSingleObject(pi.hProcess, 300000); // 5 min max
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 
