@@ -560,11 +560,6 @@ CloseHandle(ha);
 
 void mp_start(void)
 {
-	config_t *cfg = opp_config();
-	config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers", true);
-	config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
-	s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
-	s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
 	obs_log(LOG_INFO, "[obs-premiere-patch] started");
 }
 
@@ -639,6 +634,15 @@ std::thread([path]() { patch_recording(path); }).detach();
 
 void mp_on_obs_loaded(void)
 {
+	// Load saved toggle states (frontend API is ready here)
+	config_t *cfg = opp_config();
+	if (cfg) {
+		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers", true);
+		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
+		s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
+		s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
+	}
+
 // No separate txt file needed — crash survivors are MP4s in the rec folder
 // whose ADS has trim=0 or markers=0.  startup_scan handles them.
 std::string rec_folder;
