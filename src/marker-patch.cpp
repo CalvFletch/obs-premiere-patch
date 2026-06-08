@@ -331,16 +331,22 @@ mp4s.push_back(folder + "\\" +
 } while (FindNextFileA(hf, &fd));
 FindClose(hf);
 }
-int trimmed = 0;
+int patched = 0;
 for (const auto &mp4 : mp4s) {
-if (xmp_fix_tkhd_durations(mp4))
-trimmed++;
+uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE;
+xmp_read_status(mp4, &trim_st, &markers_st);
+bool needs_trim    = s_auto_trim.load()    && trim_st    != OPP_STATUS_DONE;
+bool needs_markers = s_auto_markers.load() && markers_st != OPP_STATUS_DONE;
+if (needs_trim || needs_markers) {
+patch_mp4(mp4, needs_markers, needs_trim);
+patched++;
 }
-if (trimmed > 0)
+}
+if (patched > 0)
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Startup scan: "
-        "fixed durations in %d file(s)",
-        trimmed);
+        "patched %d file(s)",
+        patched);
 }
 
 obs_log(LOG_INFO, "[obs-premiere-patch] Startup scan complete");
