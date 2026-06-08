@@ -553,17 +553,10 @@ static std::string pick_folder()
 	                             IID_PPV_ARGS(&pfd))))
 		return result;
 
-	// Let user pick any MP4 in the target folder; we derive the folder
-	// from it. This way all files are visible while browsing.
-	COMDLG_FILTERSPEC filter = {L"MP4 Files (*.mp4)", L"*.mp4"};
-	pfd->SetFileTypes(1, &filter);
-	pfd->SetFileTypeIndex(1);
-
 	DWORD opts = 0;
 	pfd->GetOptions(&opts);
-	pfd->SetOptions((opts & ~FOS_PICKFOLDERS) | FOS_PATHMUSTEXIST |
-	                FOS_FORCEFILESYSTEM);
-	pfd->SetTitle(L"Select any recording in the folder to patch");
+	pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+	pfd->SetTitle(L"Select folder to patch");
 
 	if (SUCCEEDED(pfd->Show(NULL))) {
 		IShellItem *item = nullptr;
@@ -579,12 +572,7 @@ static std::string pick_folder()
 					WideCharToMultiByte(CP_UTF8, 0, wpath,
 					                    -1, buf.data(), n,
 					                    NULL, NULL);
-					std::string file = buf.data();
-					// Strip filename — return parent folder
-					auto slash = file.find_last_of("/\\");
-					result = (slash != std::string::npos)
-					         ? file.substr(0, slash)
-					         : file;
+					result = buf.data();
 				}
 				CoTaskMemFree(wpath);
 			}
