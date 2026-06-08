@@ -431,11 +431,17 @@ if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL,
                              IID_PPV_ARGS(&pfd))))
 return result;
 
+// Show MP4s so user can verify they're in the right folder,
+// but still picking a folder (not the file itself).
+COMDLG_FILTERSPEC filter = {L"MP4 Files (*.mp4)", L"*.mp4"};
+pfd->SetFileTypes(1, &filter);
+pfd->SetFileTypeIndex(1);
+
 DWORD opts = 0;
 pfd->GetOptions(&opts);
 pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST |
                 FOS_FORCEFILESYSTEM);
-pfd->SetTitle(L"Select folder");
+pfd->SetTitle(L"Select folder containing recordings");
 
 if (SUCCEEDED(pfd->Show(NULL))) {
 IShellItem *item = nullptr;
@@ -462,15 +468,15 @@ pfd->Release();
 return result;
 }
 
-static std::string pick_file()
+static std::vector<std::string> pick_files()
 {
-std::string      result;
-IFileOpenDialog *pfd = nullptr;
+std::vector<std::string> results;
+IFileOpenDialog         *pfd = nullptr;
 
 if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL,
                              CLSCTX_INPROC_SERVER,
                              IID_PPV_ARGS(&pfd))))
-return result;
+return results;
 
 COMDLG_FILTERSPEC filter = {L"MP4 Files (*.mp4)", L"*.mp4"};
 pfd->SetFileTypes(1, &filter);
@@ -479,32 +485,38 @@ pfd->SetFileTypeIndex(1);
 DWORD opts = 0;
 pfd->GetOptions(&opts);
 pfd->SetOptions((opts & ~FOS_PICKFOLDERS) | FOS_PATHMUSTEXIST |
-                FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM);
-pfd->SetTitle(L"Select MP4 file");
+                FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM |
+                FOS_ALLOWMULTISELECT);
+pfd->SetTitle(L"Select MP4 file(s)");
 
 if (SUCCEEDED(pfd->Show(NULL))) {
+IShellItemArray *items = nullptr;
+if (SUCCEEDED(pfd->GetResults(&items))) {
+DWORD count = 0;
+items->GetCount(&count);
+for (DWORD i = 0; i < count; ++i) {
 IShellItem *item = nullptr;
-if (SUCCEEDED(pfd->GetResult(&item))) {
+if (SUCCEEDED(items->GetItemAt(i, &item))) {
 PWSTR wpath = nullptr;
-if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
-                                   &wpath))) {
-int n = WideCharToMultiByte(CP_UTF8, 0, wpath,
-                            -1, NULL, 0, NULL,
-                            NULL);
+if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath))) {
+int n = WideCharToMultiByte(CP_UTF8, 0, wpath, -1,
+                            NULL, 0, NULL, NULL);
 if (n > 0) {
 std::vector<char> buf(n);
-WideCharToMultiByte(CP_UTF8, 0, wpath,
-                    -1, buf.data(), n,
-                    NULL, NULL);
-result = buf.data();
+WideCharToMultiByte(CP_UTF8, 0, wpath, -1,
+                    buf.data(), n, NULL, NULL);
+results.push_back(buf.data());
 }
 CoTaskMemFree(wpath);
 }
 item->Release();
 }
 }
+items->Release();
+}
+}
 pfd->Release();
-return result;
+return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,8 +653,11 @@ std::thread([folder]() { fix_folder_worker(folder); }).detach();
 
 void mp_fix_file(void)
 {
-std::string path = pick_file();
-if (path.empty())
+std::vector<std::string> paths = pick_files();
+if (paths.empty())
 return;
-std::thread([path]() { fix_file_worker(path); }).detach();
+std::thread([paths]() {
+for (const auto &p : paths)
+fix_file_worker(p);
+}).detach();
 }
