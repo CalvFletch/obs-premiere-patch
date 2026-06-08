@@ -1,4 +1,4 @@
-# obs-marker-patch
+# obs-premiere-patch
 
 OBS plugin (Windows, 64-bit) that injects Premiere Pro-compatible XMP chapter markers into recorded MP4 files.
 
@@ -16,7 +16,7 @@ OBS plugin (Windows, 64-bit) that injects Premiere Pro-compatible XMP chapter ma
 
 ## Installation
 
-Download `obs-marker-patch.dll` from [Releases](https://github.com/CalvFletch/obs-marker-patch/releases) and copy it to:
+Download `obs-premiere-patch.dll` from [Releases](https://github.com/CalvFletch/obs-premiere-patch/releases) and copy it to:
 
 ```
 C:\Program Files\obs-studio\obs-plugins\64bit\

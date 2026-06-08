@@ -14,5 +14,5 @@
 // Returns true on success.
 bool xmp_inject(const std::string &mp4_path, const std::string &xmp_content);
 
-// Returns true if the file already contains our obs-marker-patch XMP.
+// Returns true if the file already contains our obs-premiere-patch XMP.
 bool xmp_has_ours(const std::string &mp4_path);

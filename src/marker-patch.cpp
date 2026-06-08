@@ -1,5 +1,5 @@
 /*
- * obs-marker-patch  --  marker-patch.cpp
+ * obs-premiere-patch  --  marker-patch.cpp
  *
  * Three operation modes:
  *   A. Recording stopped  -> wait for hybrid-MP4 remux, inject XMP
@@ -124,7 +124,7 @@ std::string frameRate = fr.str();
 
 std::ostringstream x;
 x << "<?xpacket begin=\"\xef\xbb\xbf\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
-     "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"obs-marker-patch\">\n"
+     "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"obs-premiere-patch\">\n"
      " <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
      "  <rdf:Description rdf:about=\"\"\n"
      "    xmlns:xmpDM=\"http://ns.adobe.com/xmp/1.0/DynamicMedia/\"\n"
@@ -182,7 +182,7 @@ static void patch_mp4(const std::string &path,
 if (do_av_trim) {
 if (av_trim_to_audio(path))
 obs_log(LOG_INFO,
-        "[obs-marker-patch] A/V trim applied: %s",
+        "[obs-premiere-patch] A/V trim applied: %s",
         path.c_str());
 }
 
@@ -192,7 +192,7 @@ return;
 // Skip files already carrying our XMP
 if (xmp_has_ours(path)) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Already patched, skipping: %s",
+        "[obs-premiere-patch] Already patched, skipping: %s",
         path.c_str());
 return;
 }
@@ -200,7 +200,7 @@ return;
 auto chapters = av_get_chapters(path);
 if (chapters.empty()) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] No chapters in %s -- skipping",
+        "[obs-premiere-patch] No chapters in %s -- skipping",
         path.c_str());
 return;
 }
@@ -210,12 +210,12 @@ std::string xmp = build_xmp(chapters, ts);
 
 if (xmp_inject(path, xmp)) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Injected %zu XMP marker(s) "
+        "[obs-premiere-patch] Injected %zu XMP marker(s) "
         "(timescale=%.0f) into %s",
         chapters.size(), ts, path.c_str());
 } else {
 obs_log(LOG_ERROR,
-        "[obs-marker-patch] XMP injection failed for %s",
+        "[obs-premiere-patch] XMP injection failed for %s",
         path.c_str());
 }
 }
@@ -226,7 +226,7 @@ obs_log(LOG_ERROR,
 
 static void patch_recording(std::string path)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Monitoring: %s", path.c_str());
+obs_log(LOG_INFO, "[obs-premiere-patch] Monitoring: %s", path.c_str());
 wait_for_stable(path, 60);
 patch_mp4(path, s_auto_markers.load(), s_auto_trim.load());
 }
@@ -252,7 +252,7 @@ return file;
 
 static void startup_scan(const std::string &folder)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Startup scan: %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Startup scan: %s",
         folder.c_str());
 
 // Remux orphaned MKVs (no matching MP4) and patch them
@@ -277,7 +277,7 @@ FindClose(hf);
 
 if (!orphans.empty()) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Startup scan: "
+        "[obs-premiere-patch] Startup scan: "
         "%zu orphaned MKV(s) found",
         orphans.size());
 for (const auto &mkv : orphans) {
@@ -285,12 +285,12 @@ std::string mp4 = mkv.substr(
 0, mkv.size() - 4) + ".mp4";
 if (av_remux_to_mp4(mkv, mp4)) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Remuxed: %s",
+        "[obs-premiere-patch] Remuxed: %s",
         mp4.c_str());
 patch_mp4(mp4, true, true);
 } else {
 obs_log(LOG_WARNING,
-        "[obs-marker-patch] Remux failed: %s",
+        "[obs-premiere-patch] Remux failed: %s",
         mkv.c_str());
 }
 }
@@ -318,12 +318,12 @@ trimmed++;
 }
 if (trimmed > 0)
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Startup scan: "
+        "[obs-premiere-patch] Startup scan: "
         "trimmed %d file(s)",
         trimmed);
 }
 
-obs_log(LOG_INFO, "[obs-marker-patch] Startup scan complete");
+obs_log(LOG_INFO, "[obs-premiere-patch] Startup scan complete");
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +363,7 @@ FindClose(hd);
 
 static void fix_folder_markers_worker(std::string folder)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Fix folder (markers): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder (markers): %s",
         folder.c_str());
 
 std::vector<std::string> mp4s, mkvs;
@@ -380,21 +380,21 @@ patch_mp4(mp4, true, false);
 }
 
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Fix folder (markers) done: "
+        "[obs-premiere-patch] Fix folder (markers) done: "
         "%zu MP4 + %zu MKV",
         mp4s.size(), mkvs.size());
 }
 
 static void fix_file_markers_worker(std::string path)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Fix file (markers): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix file (markers): %s",
         path.c_str());
 patch_mp4(path, true, false);
 }
 
 static void fix_folder_trim_worker(std::string folder)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Fix folder (A/V trim): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder (A/V trim): %s",
         folder.c_str());
 
 std::vector<std::string> mp4s;
@@ -404,14 +404,14 @@ for (const auto &f : mp4s)
 patch_mp4(f, false, true);
 
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Fix folder (A/V trim) done: "
+        "[obs-premiere-patch] Fix folder (A/V trim) done: "
         "%zu file(s)",
         mp4s.size());
 }
 
 static void fix_file_trim_worker(std::string path)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] Fix file (A/V trim): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix file (A/V trim): %s",
         path.c_str());
 patch_mp4(path, false, true);
 }
@@ -512,12 +512,12 @@ return result;
 
 void mp_start(void)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] started");
+obs_log(LOG_INFO, "[obs-premiere-patch] started");
 }
 
 void mp_stop(void)
 {
-obs_log(LOG_INFO, "[obs-marker-patch] stopped");
+obs_log(LOG_INFO, "[obs-premiere-patch] stopped");
 }
 
 int mp_get_auto_markers(void)
@@ -533,14 +533,14 @@ return s_auto_trim.load() ? 1 : 0;
 void mp_set_auto_markers(int on)
 {
 s_auto_markers.store(on != 0);
-obs_log(LOG_INFO, "[obs-marker-patch] Auto-markers: %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Auto-markers: %s",
         on ? "ON" : "OFF");
 }
 
 void mp_set_auto_trim(int on)
 {
 s_auto_trim.store(on != 0);
-obs_log(LOG_INFO, "[obs-marker-patch] Auto-trim: %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Auto-trim: %s",
         on ? "ON" : "OFF");
 }
 
@@ -549,7 +549,7 @@ void mp_on_recording_stopped(void)
 std::string path = get_recording_path();
 if (path.empty()) {
 obs_log(LOG_WARNING,
-        "[obs-marker-patch] Could not determine recording path");
+        "[obs-premiere-patch] Could not determine recording path");
 return;
 }
 
@@ -560,7 +560,7 @@ return s.size() >= 4 &&
 
 if (!ends_mp4(path)) {
 obs_log(LOG_INFO,
-        "[obs-marker-patch] Not an MP4 (%s), skipping",
+        "[obs-premiere-patch] Not an MP4 (%s), skipping",
         path.c_str());
 return;
 }

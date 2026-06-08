@@ -388,7 +388,7 @@ bool xmp_has_ours(const std::string &mp4_path)
 	// Check content for our marker
 	const uint8_t *xmp_payload = udta_base + xmp_b.offset + 8;
 	size_t         xmp_len     = (size_t)xmp_b.total_size - 8;
-	static const char needle[] = "obs-marker-patch";
+	static const char needle[] = "obs-premiere-patch";
 	size_t            nlen     = sizeof(needle) - 1;
 	for (size_t i = 0; i + nlen <= xmp_len; i++) {
 		if (memcmp(xmp_payload + i, needle, nlen) == 0)

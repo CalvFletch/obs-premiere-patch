@@ -33,11 +33,11 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.cisaa.obs-marker-patch"
+            "bundleId": "com.cisaa.obs-premiere-patch"
         }
     },
-    "name": "obs-marker-patch",
-    "displayName": "OBS Marker Patch",
+    "name": "obs-premiere-patch",
+    "displayName": "OBS Premiere Patch",
     "version": "1.0.0",
     "author": "CIsaa",
     "website": "https://github.com",
