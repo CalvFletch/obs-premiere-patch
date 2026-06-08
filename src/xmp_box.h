@@ -31,6 +31,16 @@ bool xmp_write_hdlr_names(const std::string &mp4_path);
 // it to ISO 8601. Returns true on success.
 bool xmp_write_creation_date(const std::string &mp4_path);
 
+// Normalize the video track's stts (sample-to-time) box to a single
+// uniform-duration entry, snapping to the nearest standard frame rate
+// (23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 120).
+// Fixes Premiere Pro scrubbing stutter at 2x/4x speed caused by hardware
+// encoders (NVENC/AMF/QSV) writing variable frame intervals.
+// Also updates mdhd.duration to n_frames × ideal_delta.
+// Returns false if already CFR, video track not found, FPS cannot be
+// confidently snapped (>0.5% error), or on error. Idempotent.
+bool xmp_normalize_stts(const std::string &mp4_path);
+
 // Patch status values written to ADS (:obs-pp) and moov/udta/OBPS.
 // Each patch (trim, markers, names, date) uses one byte independently.
 #define OPP_STATUS_NONE      00  // not yet started

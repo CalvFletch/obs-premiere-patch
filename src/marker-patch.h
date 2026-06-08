@@ -25,6 +25,8 @@ void mp_set_auto_markers(int on);
 void mp_set_auto_trim(int on);
 void mp_set_auto_names(int on);
 void mp_set_auto_date(int on);
+int  mp_get_auto_cfr(void);
+void mp_set_auto_cfr(int on);
 
 /* Manual fix actions (each shows a folder or file picker dialog) */
 void mp_fix_folder(void);

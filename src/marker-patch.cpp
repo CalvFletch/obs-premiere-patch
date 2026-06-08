@@ -42,8 +42,38 @@ static std::atomic<bool> s_auto_markers{true};
 static std::atomic<bool> s_auto_trim{true};
 static std::atomic<bool> s_auto_names{true};
 static std::atomic<bool> s_auto_date{true};
+static std::atomic<bool> s_auto_cfr{true};
 
 #define OPP_CONFIG_SECTION "obs-premiere-patch"
+
+// Per-file CFR status stored in a separate ADS stream (video.mp4:obs-pp-cfr).
+// Separate from the 4-byte obs-pp stream so existing status bytes are not
+// disturbed by the new feature.
+static uint8_t read_cfr_status(const std::string &path)
+{
+std::string ads = path + ":obs-pp-cfr";
+HANDLE ha = CreateFileA(ads.c_str(), GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        nullptr, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+if (ha == INVALID_HANDLE_VALUE) return OPP_STATUS_NONE;
+uint8_t v = OPP_STATUS_NONE; DWORD got = 0;
+ReadFile(ha, &v, 1, &got, nullptr);
+CloseHandle(ha);
+return (got >= 1) ? v : OPP_STATUS_NONE;
+}
+
+static void write_cfr_status(const std::string &path, uint8_t v)
+{
+std::string ads = path + ":obs-pp-cfr";
+HANDLE ha = CreateFileA(ads.c_str(), GENERIC_WRITE,
+                        FILE_SHARE_READ,
+                        nullptr, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+if (ha == INVALID_HANDLE_VALUE) return;
+DWORD w; WriteFile(ha, &v, 1, &w, nullptr);
+CloseHandle(ha);
+}
 
 static config_t *opp_config()
 {
@@ -187,7 +217,8 @@ static void patch_mp4(const std::string &path,
                       bool               inject_markers = true,
                       bool               do_av_trim     = true,
                       bool               inject_names   = false,
-                      bool               inject_date    = false)
+                      bool               inject_date    = false,
+                      bool               inject_cfr     = false)
 {
 // Read inline status — skip work already done in a previous run.
 uint8_t trim_st    = OPP_STATUS_NONE;
@@ -195,6 +226,20 @@ uint8_t markers_st = OPP_STATUS_NONE;
 uint8_t names_st   = OPP_STATUS_NONE;
 uint8_t date_st    = OPP_STATUS_NONE;
 xmp_read_status(path, &trim_st, &markers_st, &names_st, &date_st);
+
+// VFR → CFR normalization (must run before A/V trim; both re-read moov)
+if (inject_cfr) {
+uint8_t cfr_st = read_cfr_status(path);
+if (cfr_st != OPP_STATUS_DONE) {
+write_cfr_status(path, OPP_STATUS_PATCHING);
+bool ok = xmp_normalize_stts(path);
+obs_log(LOG_INFO,
+        "[obs-premiere-patch] CFR normalize %s: %s",
+        ok ? "done" : "skipped (already CFR or non-standard FPS)",
+        path.c_str());
+write_cfr_status(path, OPP_STATUS_DONE);
+}
+}
 
 // A/V trim
 if (do_av_trim && trim_st != OPP_STATUS_DONE) {
@@ -293,7 +338,7 @@ wait_for_stable(path, 60);
 // ADS already stamped {00,00,00} at recording start.
 // Now that moov exists, write_status also injects OBPS into moov.
 xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE);
-patch_mp4(path, s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load(), s_auto_date.load());
+patch_mp4(path, s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 }
 
 static std::string get_recording_path()
@@ -352,7 +397,7 @@ if (av_remux_to_mp4(mkv, mp4)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Remuxed: %s",
         mp4.c_str());
-patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load());
+patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 } else {
 obs_log(LOG_WARNING,
         "[obs-premiere-patch] Remux failed: %s",
@@ -384,8 +429,10 @@ bool needs_trim    = s_auto_trim.load()    && trim_st    != OPP_STATUS_DONE;
 bool needs_markers = s_auto_markers.load() && markers_st != OPP_STATUS_DONE;
 bool needs_names   = s_auto_names.load()   && names_st   != OPP_STATUS_DONE;
 bool needs_date    = s_auto_date.load()    && date_st    != OPP_STATUS_DONE;
-if (needs_trim || needs_markers || needs_names || needs_date) {
-patch_mp4(mp4, needs_markers, needs_trim, needs_names, needs_date);
+uint8_t cfr_st   = read_cfr_status(mp4);
+bool needs_cfr   = s_auto_cfr.load()    && cfr_st    != OPP_STATUS_DONE;
+if (needs_trim || needs_markers || needs_names || needs_date || needs_cfr) {
+patch_mp4(mp4, needs_markers, needs_trim, needs_names, needs_date, needs_cfr);
 patched++;
 }
 }
@@ -444,12 +491,12 @@ scan_recursive(folder, ".mp4", mp4s);
 scan_recursive(folder, ".mkv", mkvs);
 
 for (const auto &f : mp4s)
-patch_mp4(f, true, true, s_auto_names.load(), s_auto_date.load());
+patch_mp4(f, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 
 for (const auto &mkv : mkvs) {
 std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
 if (av_remux_to_mp4(mkv, mp4))
-patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load());
+patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 }
 
 obs_log(LOG_INFO,
@@ -461,7 +508,7 @@ static void fix_file_worker(std::string path)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
         path.c_str());
-patch_mp4(path, true, true, s_auto_names.load(), s_auto_date.load());
+patch_mp4(path, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +711,20 @@ void mp_set_auto_date(int on)
 	        on ? "ON" : "OFF");
 }
 
+int mp_get_auto_cfr(void)
+{
+	return s_auto_cfr.load() ? 1 : 0;
+}
+
+void mp_set_auto_cfr(int on)
+{
+	s_auto_cfr.store(on != 0);
+	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoCFR", on != 0);
+	config_save_safe(opp_config(), "tmp", nullptr);
+	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-CFR: %s",
+	        on ? "ON" : "OFF");
+}
+
 void mp_on_recording_started(void)
 {
 std::string path = get_recording_path();
@@ -709,10 +770,12 @@ void mp_on_obs_loaded(void)
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoNames",   true);
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoDate",    true);
+		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoCFR",     true);
 		s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
 		s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
 		s_auto_names.store(  config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoNames"));
 		s_auto_date.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoDate"));
+		s_auto_cfr.store(    config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoCFR"));
 	}
 
 // No separate txt file needed — crash survivors are MP4s in the rec folder

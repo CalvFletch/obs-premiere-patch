@@ -1417,3 +1417,269 @@ bool xmp_write_creation_date(const std::string &mp4_path)
 	}
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// xmp_normalize_stts
+// ---------------------------------------------------------------------------
+// Hardware encoders (NVENC/AMF/QSV) write variable frame intervals into the
+// stts (sample-to-time) box even in CBR mode.  Premiere Pro stutters when
+// scrubbing at 2x/4x speed because it uses stts to seek to frame positions.
+//
+// Fix: replace the multi-entry stts with a single uniform-delta entry snapped
+// to the nearest standard frame rate (e.g. 30000/1001 ≈ 29.97 fps).
+// Also updates mdhd.duration = n_frames × ideal_delta for consistency.
+// Safe to run multiple times — returns false immediately if already CFR.
+// ---------------------------------------------------------------------------
+
+struct VfrFpsCand { uint32_t num, den; };
+static const VfrFpsCand VFR_FPS_CANDS[] = {
+	{24000, 1001}, {24, 1}, {25, 1},
+	{30000, 1001}, {30, 1},
+	{48000, 1001}, {48, 1}, {50, 1},
+	{60000, 1001}, {60, 1},
+	{120, 1},
+};
+
+// Return ideal delta (timescale ticks per frame) snapped to nearest standard
+// FPS, or 0 if the error exceeds 0.5% (likely genuinely non-standard).
+static uint32_t snap_cfr_delta(uint32_t ts, uint64_t dur, uint64_t n_frames)
+{
+	if (n_frames == 0 || ts == 0) return 0;
+	double avg = (double)dur / (double)n_frames;
+	uint32_t best = 0;
+	double   best_err = 1.0;
+	for (const auto &c : VFR_FPS_CANDS) {
+		double   ideal = (double)ts * (double)c.den / (double)c.num;
+		if (ideal < 1.0) continue;
+		uint32_t delta = (uint32_t)(ideal + 0.5);
+		double   err   = fabs((double)delta - avg) / avg;
+		if (err < best_err) { best_err = err; best = delta; }
+	}
+	return (best_err <= 0.005) ? best : 0u;
+}
+
+static uint64_t stts_count_frames(const uint8_t *stts, uint32_t sz)
+{
+	if (sz < 16) return 0;
+	uint32_t n = u32be(stts + 12);
+	if ((uint64_t)16 + (uint64_t)n * 8 > sz) return 0;
+	uint64_t total = 0;
+	for (uint32_t i = 0; i < n; i++)
+		total += u32be(stts + 16 + i * 8);
+	return total;
+}
+
+static std::vector<uint8_t> make_stts_cfr(uint64_t n_frames, uint32_t delta)
+{
+	// stts payload: [4 ver+flags=0][4 entry_count=1][4 sample_count][4 delta]
+	std::vector<uint8_t> p(16);
+	pu32be(p.data(),      0);
+	pu32be(p.data() + 4,  1);
+	pu32be(p.data() + 8,  (uint32_t)n_frames);
+	pu32be(p.data() + 12, delta);
+	return make_box("stts", p);
+}
+
+bool xmp_normalize_stts(const std::string &mp4_path)
+{
+	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+	                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return false;
+
+	int64_t              moov_off; uint32_t moov_sz;
+	std::vector<uint8_t> mbuf;
+	if (!read_moov_only(h, &moov_off, &moov_sz, &mbuf)) {
+		CloseHandle(h); return false;
+	}
+	const uint8_t *moov = mbuf.data();
+
+	bool                 any_changed = false;
+	std::vector<uint8_t> new_moov_children;
+
+	size_t pos = 8;
+	while (pos + 8 <= moov_sz) {
+		uint32_t sz = u32be(moov + pos);
+		if (sz < 8 || pos + sz > moov_sz) break;
+
+		if (!type_eq(moov + pos, "trak")) {
+			new_moov_children.insert(new_moov_children.end(),
+			                         moov + pos, moov + pos + sz);
+			pos += sz; continue;
+		}
+
+		const uint8_t *trak = moov + pos;
+
+		// Check for video trak
+		bool           is_vide  = false;
+		uint32_t       mdia_sz  = 0;
+		const uint8_t *mdia = find_child(trak + 8, sz - 8, "mdia", &mdia_sz);
+		if (mdia) {
+			uint32_t       hdlr_sz = 0;
+			const uint8_t *hdlr = find_child(mdia + 8, mdia_sz - 8, "hdlr", &hdlr_sz);
+			if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 16, "vide"))
+				is_vide = true;
+		}
+
+		if (!is_vide || !mdia) {
+			new_moov_children.insert(new_moov_children.end(), trak, trak + sz);
+			pos += sz; continue;
+		}
+
+		// Navigate to stts
+		uint32_t       minf_sz = 0;
+		const uint8_t *minf = find_child(mdia + 8, mdia_sz - 8, "minf", &minf_sz);
+		uint32_t       stbl_sz = 0;
+		const uint8_t *stbl = minf ? find_child(minf + 8, minf_sz - 8, "stbl", &stbl_sz) : nullptr;
+		uint32_t       stts_sz = 0;
+		const uint8_t *stts = stbl ? find_child(stbl + 8, stbl_sz - 8, "stts", &stts_sz) : nullptr;
+
+		if (!stts || (stts_sz >= 16 && u32be(stts + 12) == 1)) {
+			// No stts or already a single-entry (CFR) stts — copy as-is
+			new_moov_children.insert(new_moov_children.end(), trak, trak + sz);
+			pos += sz; continue;
+		}
+
+		// Read mdhd timescale + duration
+		uint32_t mdhd_ts = 0; uint64_t mdhd_dur = 0; int mdhd_ver = -1;
+		{
+			uint32_t       mdhd_sz = 0;
+			const uint8_t *mdhd = find_child(mdia + 8, mdia_sz - 8, "mdhd", &mdhd_sz);
+			if (mdhd && mdhd_sz >= 24) {
+				mdhd_ver = mdhd[8];
+				if (mdhd_ver == 0) { mdhd_ts = u32be(mdhd + 20); mdhd_dur = u32be(mdhd + 24); }
+				else               { mdhd_ts = u32be(mdhd + 28); mdhd_dur = u64be(mdhd + 32); }
+			}
+		}
+		if (mdhd_ts == 0 || mdhd_dur == 0) {
+			new_moov_children.insert(new_moov_children.end(), trak, trak + sz);
+			pos += sz; continue;
+		}
+
+		uint64_t n_frames    = stts_count_frames(stts, stts_sz);
+		uint32_t ideal_delta = n_frames ? snap_cfr_delta(mdhd_ts, mdhd_dur, n_frames) : 0;
+		if (ideal_delta == 0) {
+			new_moov_children.insert(new_moov_children.end(), trak, trak + sz);
+			pos += sz; continue;
+		}
+
+		uint64_t             new_mdhd_dur = n_frames * (uint64_t)ideal_delta;
+		std::vector<uint8_t> new_stts     = make_stts_cfr(n_frames, ideal_delta);
+
+		// ── Rebuild stbl: replace stts, keep everything else ──────────────
+		std::vector<uint8_t> new_stbl_ch;
+		for (size_t sp = 8; sp + 8 <= stbl_sz;) {
+			uint32_t csz = u32be(stbl + sp);
+			if (csz < 8 || sp + csz > stbl_sz) break;
+			if (type_eq(stbl + sp, "stts"))
+				new_stbl_ch.insert(new_stbl_ch.end(), new_stts.begin(), new_stts.end());
+			else
+				new_stbl_ch.insert(new_stbl_ch.end(), stbl + sp, stbl + sp + csz);
+			sp += csz;
+		}
+		auto new_stbl = make_box("stbl", new_stbl_ch);
+
+		// ── Rebuild minf: replace stbl ────────────────────────────────────
+		std::vector<uint8_t> new_minf_ch;
+		for (size_t mp2 = 8; mp2 + 8 <= minf_sz;) {
+			uint32_t csz = u32be(minf + mp2);
+			if (csz < 8 || mp2 + csz > minf_sz) break;
+			if (type_eq(minf + mp2, "stbl"))
+				new_minf_ch.insert(new_minf_ch.end(), new_stbl.begin(), new_stbl.end());
+			else
+				new_minf_ch.insert(new_minf_ch.end(), minf + mp2, minf + mp2 + csz);
+			mp2 += csz;
+		}
+		auto new_minf = make_box("minf", new_minf_ch);
+
+		// ── Rebuild mdia: replace minf + patch mdhd.duration ─────────────
+		std::vector<uint8_t> new_mdia_ch;
+		for (size_t dp = 8; dp + 8 <= mdia_sz;) {
+			uint32_t csz = u32be(mdia + dp);
+			if (csz < 8 || dp + csz > mdia_sz) break;
+			if (type_eq(mdia + dp, "minf")) {
+				new_mdia_ch.insert(new_mdia_ch.end(), new_minf.begin(), new_minf.end());
+			} else if (type_eq(mdia + dp, "mdhd")) {
+				std::vector<uint8_t> new_mdhd(mdia + dp, mdia + dp + csz);
+				if (mdhd_ver == 0 && csz >= 28)
+					pu32be(new_mdhd.data() + 24, (uint32_t)new_mdhd_dur);
+				else if (mdhd_ver == 1 && csz >= 44)
+					pu64be(new_mdhd.data() + 32, new_mdhd_dur);
+				new_mdia_ch.insert(new_mdia_ch.end(), new_mdhd.begin(), new_mdhd.end());
+			} else {
+				new_mdia_ch.insert(new_mdia_ch.end(), mdia + dp, mdia + dp + csz);
+			}
+			dp += csz;
+		}
+		auto new_mdia = make_box("mdia", new_mdia_ch);
+
+		// ── Rebuild trak: replace mdia ────────────────────────────────────
+		std::vector<uint8_t> new_trak_ch;
+		for (size_t tp = 8; tp + 8 <= sz;) {
+			uint32_t csz = u32be(trak + tp);
+			if (csz < 8 || tp + csz > sz) break;
+			if (type_eq(trak + tp, "mdia"))
+				new_trak_ch.insert(new_trak_ch.end(), new_mdia.begin(), new_mdia.end());
+			else
+				new_trak_ch.insert(new_trak_ch.end(), trak + tp, trak + tp + csz);
+			tp += csz;
+		}
+		auto new_trak = make_box("trak", new_trak_ch);
+		new_moov_children.insert(new_moov_children.end(), new_trak.begin(), new_trak.end());
+		any_changed = true;
+		pos += sz;
+	}
+
+	if (!any_changed) { CloseHandle(h); return false; }
+
+	std::vector<uint8_t> new_moov    = make_box("moov", new_moov_children);
+	int64_t              fsize       = file_size(h);
+	bool                 moov_at_end = (moov_off + (int64_t)moov_sz >= fsize - 8);
+
+	if (moov_at_end) {
+		file_write_at(h, moov_off, new_moov.data(), (DWORD)new_moov.size());
+		LARGE_INTEGER li{}; li.QuadPart = moov_off + (int64_t)new_moov.size();
+		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+		SetEndOfFile(h);
+		CloseHandle(h);
+	} else {
+		CloseHandle(h);
+		std::string tmp = mp4_path + ".opp_tmp";
+		HANDLE hr = CreateFileA(mp4_path.c_str(), GENERIC_READ,
+		                        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+		                        FILE_ATTRIBUTE_NORMAL, nullptr);
+		HANDLE hw = CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hr == INVALID_HANDLE_VALUE || hw == INVALID_HANDLE_VALUE) {
+			if (hr != INVALID_HANDLE_VALUE) CloseHandle(hr);
+			if (hw != INVALID_HANDLE_VALUE) CloseHandle(hw);
+			DeleteFileA(tmp.c_str());
+			return false;
+		}
+		std::vector<uint8_t> copybuf(1 << 20);
+		LARGE_INTEGER li{}; SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+		int64_t copied = 0;
+		while (copied < fsize) {
+			if (copied == moov_off) {
+				li.QuadPart = moov_off + moov_sz;
+				SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+				copied = moov_off + moov_sz; continue;
+			}
+			int64_t remaining = fsize - copied;
+			DWORD   to_read   = (DWORD)(std::min)((int64_t)copybuf.size(), remaining);
+			if (copied < moov_off && copied + to_read > moov_off)
+				to_read = (DWORD)(moov_off - copied);
+			DWORD got = 0, written = 0;
+			ReadFile(hr, copybuf.data(), to_read, &got, nullptr);
+			if (!got) break;
+			WriteFile(hw, copybuf.data(), got, &written, nullptr);
+			copied += got;
+		}
+		DWORD ww = 0;
+		WriteFile(hw, new_moov.data(), (DWORD)new_moov.size(), &ww, nullptr);
+		CloseHandle(hr); CloseHandle(hw);
+		MoveFileExA(tmp.c_str(), mp4_path.c_str(),
+		            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	}
+	return true;
+}

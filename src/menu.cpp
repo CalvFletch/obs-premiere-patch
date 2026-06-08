@@ -53,6 +53,10 @@ void mp_setup_menu(void)
 	tog_date->setCheckable(true);
 	tog_date->setChecked(mp_get_auto_date() != 0);
 
+	QAction *tog_cfr = sub->addAction("Auto CFR Normalization");
+	tog_cfr->setCheckable(true);
+	tog_cfr->setChecked(mp_get_auto_cfr() != 0);
+
 	sub->addSeparator();
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
@@ -68,6 +72,8 @@ void mp_setup_menu(void)
 	                 [](bool on) { mp_set_auto_names(on ? 1 : 0); });
 	QObject::connect(tog_date, &QAction::toggled,
 	                 [](bool on) { mp_set_auto_date(on ? 1 : 0); });
+	QObject::connect(tog_cfr, &QAction::toggled,
+	                 [](bool on) { mp_set_auto_cfr(on ? 1 : 0); });
 	QObject::connect(act_folder, &QAction::triggered,
 	                 []() { mp_fix_folder(); });
 	QObject::connect(act_file, &QAction::triggered,
