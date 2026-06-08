@@ -6,7 +6,6 @@ OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
 - **Chapter markers** — automatically translates OBS chapter markers into Premiere Pro's XMP format
 - **A/V sync fix** — corrects a timing issue that causes audio to be shorter than the video length
-- **Crash recovery** — if OBS crashes mid-recording, the file is automatically fixed on the next OBS launch
 
 ## Requirements
 
