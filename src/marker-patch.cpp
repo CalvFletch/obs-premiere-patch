@@ -255,7 +255,8 @@ xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 
 // Track names
 if (inject_names && names_st != OPP_STATUS_DONE) {
-xmp_write_status(path, trim_st, markers_st, OPP_STATUS_PATCHING, date_st);
+names_st = OPP_STATUS_PATCHING;
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_hdlr_names(path)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Track names written: %s",
@@ -266,12 +267,15 @@ xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 obs_log(LOG_WARNING,
         "[obs-premiere-patch] Track name write failed or skipped: %s",
         path.c_str());
+names_st = OPP_STATUS_NONE; // reset so next run retries
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 }
 
 // Creation date
 if (inject_date && date_st != OPP_STATUS_DONE) {
-xmp_write_status(path, trim_st, markers_st, names_st, OPP_STATUS_PATCHING);
+date_st = OPP_STATUS_PATCHING;
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_creation_date(path)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Creation date written: %s",
@@ -282,6 +286,8 @@ xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 obs_log(LOG_WARNING,
         "[obs-premiere-patch] Creation date write failed: %s",
         path.c_str());
+date_st = OPP_STATUS_NONE; // reset so next run retries
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 }
 
