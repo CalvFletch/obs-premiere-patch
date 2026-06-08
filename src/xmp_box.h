@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 /*
  * Pure C++ MP4 box manipulation — no external dependencies.
@@ -21,18 +22,24 @@ bool xmp_has_ours(const std::string &mp4_path);
 // Returns true if a patch was applied, false if nothing needed or on error.
 bool xmp_fix_tkhd_durations(const std::string &mp4_path);
 
+// Write OBS track names into each audio trak's hdlr name field.
+// names[0] = track 1 name, names[1] = track 2, etc.  Empty strings are skipped.
+// Returns true if at least one name was written.
+bool xmp_write_hdlr_names(const std::string &mp4_path,
+                           const std::vector<std::string> &names);
+
 // Patch status values written to ADS (:obs-pp) and moov/udta/OBPS.
-// Each patch (trim, markers) uses one byte independently.
+// Each patch (trim, markers, names) uses one byte independently.
 #define OPP_STATUS_NONE      00  // not yet started
 #define OPP_STATUS_PATCHING  10  // started, not finished (crash here → retry)
 #define OPP_STATUS_DONE      11  // finished successfully
 
-// Read status bytes [trim, markers] from ADS (fast) or OBPS box (fallback).
+// Read status bytes [trim, markers, names] from ADS (fast) or OBPS box (fallback).
 // Returns false if neither source exists (old/non-OBS file → treat as unknown).
 bool xmp_read_status(const std::string &mp4_path,
-                     uint8_t *trim_st, uint8_t *markers_st);
+                     uint8_t *trim_st, uint8_t *markers_st, uint8_t *names_st);
 
-// Write status bytes [trim, markers].  ADS is always written (works before moov).
+// Write status bytes [trim, markers, names].  ADS is always written (works before moov).
 // OBPS in moov is updated if it already exists, or injected if moov is present.
 bool xmp_write_status(const std::string &mp4_path,
-                      uint8_t trim_st, uint8_t markers_st);
+                      uint8_t trim_st, uint8_t markers_st, uint8_t names_st);

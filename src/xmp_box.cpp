@@ -440,9 +440,9 @@ static int64_t find_obps_off(const uint8_t *moov_buf, uint32_t moov_sz,
 // Build udta inner payload with OBPS replaced/added (other children preserved).
 static std::vector<uint8_t>
 build_udta_with_obps(const uint8_t *udta_inner, size_t udta_inner_len,
-                     uint8_t trim_st, uint8_t markers_st)
+                     uint8_t trim_st, uint8_t markers_st, uint8_t names_st)
 {
-	uint8_t              pl[4] = {trim_st, markers_st, 0, 0};
+	uint8_t              pl[4] = {trim_st, markers_st, names_st, 0};
 	std::vector<uint8_t> obps_box =
 		make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
 
@@ -491,9 +491,9 @@ static bool read_moov_only(HANDLE h, int64_t *moov_off, uint32_t *moov_sz,
 }
 
 bool xmp_read_status(const std::string &mp4_path,
-                     uint8_t *trim_st, uint8_t *markers_st)
+                     uint8_t *trim_st, uint8_t *markers_st, uint8_t *names_st)
 {
-	*trim_st = *markers_st = OPP_STATUS_NONE;
+	*trim_st = *markers_st = *names_st = OPP_STATUS_NONE;
 
 	// --- Fast path: NTFS Alternate Data Stream ---
 	std::string ads = mp4_path + ":obs-pp";
@@ -502,12 +502,13 @@ bool xmp_read_status(const std::string &mp4_path,
 	                        nullptr, OPEN_EXISTING,
 	                        FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (ha != INVALID_HANDLE_VALUE) {
-		uint8_t flags[2]; DWORD got = 0;
-		ReadFile(ha, flags, 2, &got, nullptr);
+		uint8_t flags[3] = {}; DWORD got = 0;
+		ReadFile(ha, flags, 3, &got, nullptr);
 		CloseHandle(ha);
 		if (got >= 2) {
 			*trim_st    = flags[0];
 			*markers_st = flags[1];
+			*names_st   = (got >= 3) ? flags[2] : OPP_STATUS_NONE;
 			return true;
 		}
 	}
@@ -527,21 +528,22 @@ bool xmp_read_status(const std::string &mp4_path,
 	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
 	if (status_off < 0) { CloseHandle(h); return false; }
 
-	uint8_t flags[2]; DWORD got2 = 0;
+	uint8_t flags[3] = {}; DWORD got2 = 0;
 	LARGE_INTEGER li{}; li.QuadPart = status_off;
 	SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
-	ReadFile(h, flags, 2, &got2, nullptr);
+	ReadFile(h, flags, 3, &got2, nullptr);
 	CloseHandle(h);
 	if (got2 < 2) return false;
 	*trim_st    = flags[0];
 	*markers_st = flags[1];
+	*names_st   = (got2 >= 3) ? flags[2] : OPP_STATUS_NONE;
 	return true;
 }
 
 bool xmp_write_status(const std::string &mp4_path,
-                      uint8_t trim_st, uint8_t markers_st)
+                      uint8_t trim_st, uint8_t markers_st, uint8_t names_st)
 {
-	uint8_t flags[2] = {trim_st, markers_st};
+	uint8_t flags[3] = {trim_st, markers_st, names_st};
 
 	// --- Always write ADS (works before moov exists, O(1) seek+write) ---
 	{
@@ -550,7 +552,7 @@ bool xmp_write_status(const std::string &mp4_path,
 		                        FILE_SHARE_READ, nullptr,
 		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (ha != INVALID_HANDLE_VALUE) {
-			DWORD w; WriteFile(ha, flags, 2, &w, nullptr);
+			DWORD w; WriteFile(ha, flags, 3, &w, nullptr);
 			CloseHandle(ha);
 		}
 	}
@@ -567,10 +569,10 @@ bool xmp_write_status(const std::string &mp4_path,
 		CloseHandle(h); return true; // no moov yet (recording in progress), ok
 	}
 
-	// If OBPS already exists: 2-byte in-place write.
+	// If OBPS already exists: 3-byte in-place write.
 	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
 	if (status_off >= 0) {
-		file_write_at(h, status_off, flags, 2);
+		file_write_at(h, status_off, flags, 3);
 		CloseHandle(h); return true;
 	}
 
@@ -581,9 +583,9 @@ bool xmp_write_status(const std::string &mp4_path,
 		new_udta_inner = build_udta_with_obps(
 			mbuf.data() + udta.offset + 8,
 			(size_t)udta.total_size - 8,
-			trim_st, markers_st);
+			trim_st, markers_st, names_st);
 	} else {
-		uint8_t pl[4] = {trim_st, markers_st, 0, 0};
+		uint8_t pl[4] = {trim_st, markers_st, names_st, 0};
 		new_udta_inner = make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
 	}
 	std::vector<uint8_t> new_udta  = make_box("udta", new_udta_inner);
@@ -905,4 +907,192 @@ bool xmp_fix_tkhd_durations(const std::string &mp4_path)
 
 	CloseHandle(h);
 	return ok;
+}
+
+// ---------------------------------------------------------------------------
+// xmp_write_hdlr_names
+// ---------------------------------------------------------------------------
+// Replaces the name field in each audio trak's hdlr box with the supplied
+// track names.  names[0] = first audio track, names[1] = second, etc.
+// Empty or out-of-range entries are left unchanged.
+// ---------------------------------------------------------------------------
+
+// Build a new hdlr box with the name field replaced.
+static std::vector<uint8_t>
+rebuild_hdlr_box(const uint8_t *hdlr, uint32_t sz, const std::string &new_name)
+{
+	if (sz < 32) return std::vector<uint8_t>(hdlr, hdlr + sz); // malformed, keep as-is
+	// Fixed fields: version/flags(4) + pre_defined(4) + handler_type(4) + reserved(12) = 24 bytes
+	// Total fixed after box header (8): 24 bytes, starting at offset 8.
+	std::vector<uint8_t> payload(hdlr + 8, hdlr + 32); // 24 fixed bytes
+	// Append new name as null-terminated UTF-8
+	for (char c : new_name) payload.push_back((uint8_t)c);
+	payload.push_back(0); // null terminator
+	return make_box("hdlr", payload);
+}
+
+// Rebuild a mdia box replacing its hdlr name.
+static std::vector<uint8_t>
+rebuild_mdia_box(const uint8_t *mdia, uint32_t sz, const std::string &new_name)
+{
+	std::vector<uint8_t> children;
+	size_t p = 8;
+	while (p + 8 <= sz) {
+		uint32_t csz = u32be(mdia + p);
+		if (csz < 8 || p + csz > sz) break;
+		if (type_eq(mdia + p, "hdlr")) {
+			auto new_hdlr = rebuild_hdlr_box(mdia + p, csz, new_name);
+			children.insert(children.end(), new_hdlr.begin(), new_hdlr.end());
+		} else {
+			children.insert(children.end(), mdia + p, mdia + p + csz);
+		}
+		p += csz;
+	}
+	return make_box("mdia", children);
+}
+
+// Rebuild a trak box replacing its mdia's hdlr name.
+static std::vector<uint8_t>
+rebuild_trak_box(const uint8_t *trak, uint32_t sz, const std::string &new_name)
+{
+	std::vector<uint8_t> children;
+	size_t p = 8;
+	while (p + 8 <= sz) {
+		uint32_t csz = u32be(trak + p);
+		if (csz < 8 || p + csz > sz) break;
+		if (type_eq(trak + p, "mdia")) {
+			auto new_mdia = rebuild_mdia_box(trak + p, csz, new_name);
+			children.insert(children.end(), new_mdia.begin(), new_mdia.end());
+		} else {
+			children.insert(children.end(), trak + p, trak + p + csz);
+		}
+		p += csz;
+	}
+	return make_box("trak", children);
+}
+
+bool xmp_write_hdlr_names(const std::string &mp4_path,
+                           const std::vector<std::string> &names)
+{
+	if (names.empty()) return false;
+
+	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+	                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return false;
+
+	int64_t              moov_off; uint32_t moov_sz;
+	std::vector<uint8_t> mbuf;
+	if (!read_moov_only(h, &moov_off, &moov_sz, &mbuf)) {
+		CloseHandle(h); return false;
+	}
+
+	// Walk moov children; rebuild soun trak boxes with new names.
+	int                  audio_idx = 0;
+	bool                 any_changed = false;
+	std::vector<uint8_t> new_moov_children;
+
+	size_t pos = 8;
+	while (pos + 8 <= moov_sz) {
+		uint32_t sz = u32be(mbuf.data() + pos);
+		if (sz < 8 || pos + sz > moov_sz) break;
+
+		if (type_eq(mbuf.data() + pos, "trak")) {
+			// Determine if this trak is audio (soun)
+			bool is_soun = false;
+			const uint8_t *trak = mbuf.data() + pos;
+			size_t tp = 8;
+			while (tp + 8 <= sz) {
+				uint32_t tsz = u32be(trak + tp);
+				if (tsz < 8 || tp + tsz > sz) break;
+				if (type_eq(trak + tp, "mdia")) {
+					size_t mp = 8;
+					while (mp + 8 <= tsz) {
+						uint32_t msz = u32be(trak + tp + mp);
+						if (msz < 8 || mp + msz > tsz) break;
+						if (type_eq(trak + tp + mp, "hdlr") && msz >= 24 &&
+						    type_eq(trak + tp + mp + 16, "soun"))
+							is_soun = true;
+						mp += msz;
+					}
+				}
+				tp += tsz;
+			}
+
+			if (is_soun && audio_idx < (int)names.size() &&
+			    !names[audio_idx].empty()) {
+				auto new_trak = rebuild_trak_box(trak, sz, names[audio_idx]);
+				new_moov_children.insert(new_moov_children.end(),
+				                         new_trak.begin(), new_trak.end());
+				any_changed = true;
+			} else {
+				new_moov_children.insert(new_moov_children.end(),
+				                         trak, trak + sz);
+			}
+			if (is_soun) audio_idx++;
+		} else {
+			new_moov_children.insert(new_moov_children.end(),
+			                         mbuf.data() + pos, mbuf.data() + pos + sz);
+		}
+		pos += sz;
+	}
+
+	if (!any_changed) { CloseHandle(h); return false; }
+
+	std::vector<uint8_t> new_moov = make_box("moov", new_moov_children);
+
+	int64_t fsize       = file_size(h);
+	bool    moov_at_end = (moov_off + (int64_t)moov_sz >= fsize - 8);
+	if (moov_at_end) {
+		file_write_at(h, moov_off, new_moov.data(), (DWORD)new_moov.size());
+		LARGE_INTEGER li{}; li.QuadPart = moov_off + (int64_t)new_moov.size();
+		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+		SetEndOfFile(h);
+	} else {
+		// moov not at end — use temp file (rare for OBS recordings)
+		CloseHandle(h);
+		std::string tmp = mp4_path + ".opp_tmp";
+		// Read media data (everything before moov)
+		HANDLE hr = CreateFileA(mp4_path.c_str(), GENERIC_READ,
+		                        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+		                        FILE_ATTRIBUTE_NORMAL, nullptr);
+		HANDLE hw = CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hr == INVALID_HANDLE_VALUE || hw == INVALID_HANDLE_VALUE) {
+			if (hr != INVALID_HANDLE_VALUE) CloseHandle(hr);
+			if (hw != INVALID_HANDLE_VALUE) CloseHandle(hw);
+			DeleteFileA(tmp.c_str());
+			return false;
+		}
+		// Copy everything except old moov
+		std::vector<uint8_t> buf(1 << 20);
+		LARGE_INTEGER li{}; SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+		int64_t copied = 0;
+		while (copied < fsize) {
+			int64_t remaining = fsize - copied;
+			if (copied == moov_off) { // skip old moov
+				li.QuadPart = moov_off + moov_sz;
+				SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+				copied = moov_off + moov_sz;
+				continue;
+			}
+			DWORD to_read = (DWORD)(std::min)((int64_t)buf.size(), remaining);
+			if (copied < moov_off && copied + to_read > moov_off)
+				to_read = (DWORD)(moov_off - copied);
+			DWORD got = 0, written = 0;
+			ReadFile(hr, buf.data(), to_read, &got, nullptr);
+			if (!got) break;
+			WriteFile(hw, buf.data(), got, &written, nullptr);
+			copied += got;
+		}
+		// Append new moov
+		DWORD ww = 0;
+		WriteFile(hw, new_moov.data(), (DWORD)new_moov.size(), &ww, nullptr);
+		CloseHandle(hr); CloseHandle(hw);
+		MoveFileExA(tmp.c_str(), mp4_path.c_str(),
+		            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	}
+
+	CloseHandle(h);
+	return true;
 }

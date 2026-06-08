@@ -45,6 +45,10 @@ void mp_setup_menu(void)
 	tog_trim->setCheckable(true);
 	tog_trim->setChecked(mp_get_auto_trim() != 0);
 
+	QAction *tog_names = sub->addAction("Auto Track Names");
+	tog_names->setCheckable(true);
+	tog_names->setChecked(mp_get_auto_names() != 0);
+
 	sub->addSeparator();
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
@@ -56,6 +60,8 @@ void mp_setup_menu(void)
 	                 [](bool on) { mp_set_auto_markers(on ? 1 : 0); });
 	QObject::connect(tog_trim, &QAction::toggled,
 	                 [](bool on) { mp_set_auto_trim(on ? 1 : 0); });
+	QObject::connect(tog_names, &QAction::toggled,
+	                 [](bool on) { mp_set_auto_names(on ? 1 : 0); });
 	QObject::connect(act_folder, &QAction::triggered,
 	                 []() { mp_fix_folder(); });
 	QObject::connect(act_file, &QAction::triggered,

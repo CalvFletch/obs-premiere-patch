@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cctype>
 #include <atomic>
+#include <mutex>
 
 // ---------------------------------------------------------------------------
 // Auto-behaviour toggles (toggled from Qt UI thread, read on worker threads)
@@ -40,6 +41,11 @@
 
 static std::atomic<bool> s_auto_markers{true};
 static std::atomic<bool> s_auto_trim{true};
+static std::atomic<bool> s_auto_names{true};
+
+// Track names captured at recording start; consumed at recording stop.
+static std::mutex               s_names_mutex;
+static std::vector<std::string> s_pending_track_names;
 
 #define OPP_CONFIG_SECTION "obs-premiere-patch"
 
@@ -181,24 +187,43 @@ return x.str();
 // Shared pipeline -- optional A/V trim + optional XMP injection
 // ---------------------------------------------------------------------------
 
-static void patch_mp4(const std::string &path,
-                      bool               inject_markers = true,
-                      bool               do_av_trim     = true)
+static void patch_mp4(const std::string          &path,
+                      bool                        inject_markers = true,
+                      bool                        do_av_trim     = true,
+                      bool                        inject_names   = false,
+                      const std::vector<std::string> &names      = {})
 {
 // Read inline status — skip work already done in a previous run.
 uint8_t trim_st    = OPP_STATUS_NONE;
 uint8_t markers_st = OPP_STATUS_NONE;
-xmp_read_status(path, &trim_st, &markers_st);
+uint8_t names_st   = OPP_STATUS_NONE;
+xmp_read_status(path, &trim_st, &markers_st, &names_st);
 
 // A/V trim
 if (do_av_trim && trim_st != OPP_STATUS_DONE) {
-xmp_write_status(path, OPP_STATUS_PATCHING, markers_st);
+xmp_write_status(path, OPP_STATUS_PATCHING, markers_st, names_st);
 if (xmp_fix_tkhd_durations(path)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Duration fixed: %s",
         path.c_str());
 trim_st = OPP_STATUS_DONE;
-xmp_write_status(path, trim_st, markers_st);
+xmp_write_status(path, trim_st, markers_st, names_st);
+}
+}
+
+// Track names
+if (inject_names && names_st != OPP_STATUS_DONE && !names.empty()) {
+xmp_write_status(path, trim_st, markers_st, OPP_STATUS_PATCHING);
+if (xmp_write_hdlr_names(path, names)) {
+obs_log(LOG_INFO,
+        "[obs-premiere-patch] Track names written: %s",
+        path.c_str());
+names_st = OPP_STATUS_DONE;
+xmp_write_status(path, trim_st, markers_st, names_st);
+} else {
+obs_log(LOG_WARNING,
+        "[obs-premiere-patch] Track name write failed or skipped: %s",
+        path.c_str());
 }
 }
 
@@ -230,13 +255,13 @@ return;
 double      ts  = av_get_video_timescale(path);
 std::string xmp = build_xmp(chapters, ts);
 
-xmp_write_status(path, trim_st, OPP_STATUS_PATCHING);
+xmp_write_status(path, trim_st, OPP_STATUS_PATCHING, names_st);
 if (xmp_inject(path, xmp)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Injected %zu XMP marker(s) "
         "(timescale=%.0f) into %s",
         chapters.size(), ts, path.c_str());
-xmp_write_status(path, trim_st, OPP_STATUS_DONE);
+xmp_write_status(path, trim_st, OPP_STATUS_DONE, names_st);
 } else {
 obs_log(LOG_ERROR,
         "[obs-premiere-patch] XMP injection failed for %s",
@@ -248,14 +273,15 @@ obs_log(LOG_ERROR,
 // Mode A: recording-stopped -- wait for remux, patch MP4
 // ---------------------------------------------------------------------------
 
-static void patch_recording(std::string path)
+static void patch_recording(std::string path, std::vector<std::string> track_names)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Monitoring: %s", path.c_str());
 wait_for_stable(path, 60);
-// ADS already stamped {00,00} at recording start.
+// ADS already stamped {00,00,00} at recording start.
 // Now that moov exists, write_status also injects OBPS into moov.
-xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE);
-patch_mp4(path, s_auto_markers.load(), s_auto_trim.load());
+xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE);
+patch_mp4(path, s_auto_markers.load(), s_auto_trim.load(),
+          s_auto_names.load(), track_names);
 }
 
 static std::string get_recording_path()
@@ -340,10 +366,11 @@ FindClose(hf);
 }
 int patched = 0;
 for (const auto &mp4 : mp4s) {
-uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE;
-xmp_read_status(mp4, &trim_st, &markers_st);
+uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE, names_st = OPP_STATUS_NONE;
+xmp_read_status(mp4, &trim_st, &markers_st, &names_st);
 bool needs_trim    = s_auto_trim.load()    && trim_st    != OPP_STATUS_DONE;
 bool needs_markers = s_auto_markers.load() && markers_st != OPP_STATUS_DONE;
+// names not available at startup, skip
 if (needs_trim || needs_markers) {
 patch_mp4(mp4, needs_markers, needs_trim);
 patched++;
@@ -552,9 +579,9 @@ HANDLE ha = CreateFileA(ads.c_str(), GENERIC_WRITE,
                         nullptr, CREATE_ALWAYS,
                         FILE_ATTRIBUTE_NORMAL, nullptr);
 if (ha == INVALID_HANDLE_VALUE) return;
-uint8_t flags[2] = {OPP_STATUS_NONE, OPP_STATUS_NONE};
+uint8_t flags[3] = {OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE};
 DWORD w;
-WriteFile(ha, flags, 2, &w, nullptr);
+WriteFile(ha, flags, 3, &w, nullptr);
 CloseHandle(ha);
 }
 
@@ -596,14 +623,46 @@ void mp_set_auto_trim(int on)
 	        on ? "ON" : "OFF");
 }
 
+int mp_get_auto_names(void)
+{
+	return s_auto_names.load() ? 1 : 0;
+}
+
+void mp_set_auto_names(int on)
+{
+	s_auto_names.store(on != 0);
+	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoNames", on != 0);
+	config_save_safe(opp_config(), "tmp", nullptr);
+	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-names: %s",
+	        on ? "ON" : "OFF");
+}
+
 void mp_on_recording_started(void)
 {
 std::string path = get_recording_path();
 if (path.empty()) return;
 // Stamp ADS immediately — works while OBS holds the main file handle.
 // This is the crash-recovery anchor: if OBS dies before recording stops,
-// the ADS {0,0} survives and startup_scan will detect + process the file.
+// the ADS {0,0,0} survives and startup_scan will detect + process the file.
 stamp_ads_pending(path);
+
+// Capture audio track names (OBS output is configured at this point).
+{
+    std::vector<std::string> names;
+    obs_output_t *rec = obs_frontend_get_recording_output();
+    if (rec) {
+        for (int i = 0; i < 6; i++) {
+            obs_encoder_t *enc = obs_output_get_audio_encoder(rec, (size_t)i);
+            if (!enc) break;
+            const char *n = obs_encoder_get_name(enc);
+            names.push_back(n ? n : "");
+        }
+        obs_output_release(rec);
+    }
+    std::lock_guard<std::mutex> lock(s_names_mutex);
+    s_pending_track_names = std::move(names);
+}
+
 obs_log(LOG_INFO, "[obs-premiere-patch] Recording started (ADS stamped): %s",
         path.c_str());
 }
@@ -629,7 +688,13 @@ obs_log(LOG_INFO,
 return;
 }
 
-std::thread([path]() { patch_recording(path); }).detach();
+std::vector<std::string> track_names;
+{
+    std::lock_guard<std::mutex> lock(s_names_mutex);
+    track_names = std::move(s_pending_track_names);
+    s_pending_track_names.clear();
+}
+std::thread([path, track_names]() { patch_recording(path, track_names); }).detach();
 }
 
 void mp_on_obs_loaded(void)
@@ -639,8 +704,10 @@ void mp_on_obs_loaded(void)
 	if (cfg) {
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers", true);
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
+		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoNames",   true);
 		s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
 		s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
+		s_auto_names.store(  config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoNames"));
 	}
 
 // No separate txt file needed — crash survivors are MP4s in the rec folder
