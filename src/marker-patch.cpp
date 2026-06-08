@@ -487,7 +487,7 @@ FindClose(hd);
 // Mode C: manual fix workers
 // ---------------------------------------------------------------------------
 
-static void fix_folder_worker(std::string folder)
+static void fix_folder_worker(std::string folder, PatchOpts opts, PatchDoneCallback cb)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder: %s",
         folder.c_str());
@@ -496,25 +496,32 @@ std::vector<std::string> mp4s, mkvs;
 scan_recursive(folder, ".mp4", mp4s);
 scan_recursive(folder, ".mkv", mkvs);
 
-for (const auto &f : mp4s)
-patch_mp4(f, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
+int processed = 0;
+for (const auto &f : mp4s) {
+patch_mp4(f, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
+++processed;
+}
 
 for (const auto &mkv : mkvs) {
 std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
-if (av_remux_to_mp4(mkv, mp4))
-patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
+if (av_remux_to_mp4(mkv, mp4)) {
+patch_mp4(mp4, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
+++processed;
+}
 }
 
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Fix folder done: %zu MP4 + %zu MKV",
-        mp4s.size(), mkvs.size());
+        "[obs-premiere-patch] Fix folder done: %d file(s)",
+        processed);
+if (cb) cb(processed);
 }
 
-static void fix_file_worker(std::string path)
+static void fix_file_worker(std::string path, PatchOpts opts, PatchDoneCallback cb)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
         path.c_str());
-patch_mp4(path, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
+patch_mp4(path, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
+if (cb) cb(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -811,19 +818,37 @@ startup_scan(rec_folder);
 
 void mp_fix_folder(void)
 {
-std::string folder = pick_folder();
-if (folder.empty())
-return;
-std::thread([folder]() { fix_folder_worker(folder); }).detach();
+PatchOpts opts{s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load(),
+               s_auto_date.load(),    s_auto_cfr.load()};
+mp_fix_folder_opts(opts, nullptr);
 }
 
 void mp_fix_file(void)
 {
+PatchOpts opts{s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load(),
+               s_auto_date.load(),    s_auto_cfr.load()};
+mp_fix_file_opts(opts, nullptr);
+}
+
+void mp_fix_folder_opts(PatchOpts opts, PatchDoneCallback cb)
+{
+std::string folder = pick_folder();
+if (folder.empty()) return;
+std::thread([folder, opts, cb = std::move(cb)]() {
+fix_folder_worker(folder, opts, cb);
+}).detach();
+}
+
+void mp_fix_file_opts(PatchOpts opts, PatchDoneCallback cb)
+{
 std::vector<std::string> paths = pick_files();
-if (paths.empty())
-return;
-std::thread([paths]() {
-for (const auto &p : paths)
-fix_file_worker(p);
+if (paths.empty()) return;
+std::thread([paths, opts, cb = std::move(cb)]() {
+int total = 0;
+for (const auto &p : paths) {
+fix_file_worker(p, opts, {});
+++total;
+}
+if (cb) cb(total);
 }).detach();
 }

@@ -35,3 +35,24 @@ void mp_fix_file(void);
 #ifdef __cplusplus
 }
 #endif
+
+// ── C++-only API ────────────────────────────────────────────────────────────
+#ifdef __cplusplus
+#include <functional>
+
+struct PatchOpts {
+	bool markers = true;
+	bool trim    = true;
+	bool names   = true;
+	bool date    = true;
+	bool cfr     = true;
+};
+
+using PatchDoneCallback = std::function<void(int processed)>;
+
+// Show the file/folder picker then run the patch on a background thread.
+// cb is invoked on the worker thread when complete — marshal to main thread
+// via QMetaObject::invokeMethod if you need to update UI.
+void mp_fix_folder_opts(PatchOpts opts, PatchDoneCallback cb);
+void mp_fix_file_opts  (PatchOpts opts, PatchDoneCallback cb);
+#endif
