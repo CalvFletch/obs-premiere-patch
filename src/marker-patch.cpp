@@ -41,6 +41,13 @@
 static std::atomic<bool> s_auto_markers{true};
 static std::atomic<bool> s_auto_trim{true};
 
+#define OPP_CONFIG_SECTION "obs-premiere-patch"
+
+static config_t *opp_config()
+{
+	return obs_frontend_get_app_config();
+}
+
 // ---------------------------------------------------------------------------
 // Wait for file to stabilise (hybrid-MP4 remux running)
 // ---------------------------------------------------------------------------
@@ -548,7 +555,12 @@ CloseHandle(ha);
 
 void mp_start(void)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] started");
+	config_t *cfg = opp_config();
+	config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers", true);
+	config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
+	s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
+	s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
+	obs_log(LOG_INFO, "[obs-premiere-patch] started");
 }
 
 void mp_stop(void)
@@ -558,26 +570,30 @@ obs_log(LOG_INFO, "[obs-premiere-patch] stopped");
 
 int mp_get_auto_markers(void)
 {
-return s_auto_markers.load() ? 1 : 0;
+	return s_auto_markers.load() ? 1 : 0;
 }
 
 int mp_get_auto_trim(void)
 {
-return s_auto_trim.load() ? 1 : 0;
+	return s_auto_trim.load() ? 1 : 0;
 }
 
 void mp_set_auto_markers(int on)
 {
-s_auto_markers.store(on != 0);
-obs_log(LOG_INFO, "[obs-premiere-patch] Auto-markers: %s",
-        on ? "ON" : "OFF");
+	s_auto_markers.store(on != 0);
+	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoMarkers", on != 0);
+	config_save_safe(opp_config(), "tmp", nullptr);
+	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-markers: %s",
+	        on ? "ON" : "OFF");
 }
 
 void mp_set_auto_trim(int on)
 {
-s_auto_trim.store(on != 0);
-obs_log(LOG_INFO, "[obs-premiere-patch] Auto-trim: %s",
-        on ? "ON" : "OFF");
+	s_auto_trim.store(on != 0);
+	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoTrim", on != 0);
+	config_save_safe(opp_config(), "tmp", nullptr);
+	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-trim: %s",
+	        on ? "ON" : "OFF");
 }
 
 void mp_on_recording_started(void)
