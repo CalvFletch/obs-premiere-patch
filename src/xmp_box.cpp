@@ -912,70 +912,57 @@ bool xmp_fix_tkhd_durations(const std::string &mp4_path)
 // ---------------------------------------------------------------------------
 // xmp_write_hdlr_names
 // ---------------------------------------------------------------------------
-// Replaces the name field in each audio trak's hdlr box with the supplied
-// track names.  names[0] = first audio track, names[1] = second, etc.
-// Empty or out-of-range entries are left unchanged.
+// For each audio trak, reads the name stored in trak/udta/name (written by
+// OBS) and copies it into the trak/mdia/hdlr name field so Premiere Pro
+// shows the real source name instead of "OBS Audio Handler".
+// Works on any OBS hybrid_mp4 recording — no runtime capture needed.
 // ---------------------------------------------------------------------------
+
+// Helper: find a direct child box of given type inside a buffer slice.
+// Returns pointer into buf and sets *found_sz, or nullptr if not found.
+static const uint8_t *find_child(const uint8_t *buf, size_t len,
+                                 const char *type4, uint32_t *found_sz)
+{
+	size_t p = 0;
+	while (p + 8 <= len) {
+		uint32_t sz = u32be(buf + p);
+		if (sz < 8 || p + sz > len) break;
+		if (type_eq(buf + p, type4)) { if (found_sz) *found_sz = sz; return buf + p; }
+		p += sz;
+	}
+	return nullptr;
+}
+
+// Read the null-terminated string from a trak/udta/name box.
+// box points to the 8-byte "name" box header; box_sz is full box size.
+static std::string read_name_box(const uint8_t *box, uint32_t box_sz)
+{
+	// name box layout: [4 size][4 "name"][4 locale][string...]  (QuickTime style)
+	// OR simply:       [4 size][4 "name"][string...]             (bare, no locale)
+	// OBS writes the bare form.
+	if (box_sz <= 8) return {};
+	const uint8_t *data = box + 8;
+	size_t         data_len = box_sz - 8;
+	// If first 4 bytes look like a locale int (high byte 0), skip them.
+	// OBS does NOT write a locale, so we don't skip.
+	size_t end = 0;
+	while (end < data_len && data[end] != 0) end++;
+	return std::string(reinterpret_cast<const char *>(data), end);
+}
 
 // Build a new hdlr box with the name field replaced.
 static std::vector<uint8_t>
 rebuild_hdlr_box(const uint8_t *hdlr, uint32_t sz, const std::string &new_name)
 {
-	if (sz < 32) return std::vector<uint8_t>(hdlr, hdlr + sz); // malformed, keep as-is
-	// Fixed fields: version/flags(4) + pre_defined(4) + handler_type(4) + reserved(12) = 24 bytes
-	// Total fixed after box header (8): 24 bytes, starting at offset 8.
+	if (sz < 32) return std::vector<uint8_t>(hdlr, hdlr + sz);
 	std::vector<uint8_t> payload(hdlr + 8, hdlr + 32); // 24 fixed bytes
-	// Append new name as null-terminated UTF-8
 	for (char c : new_name) payload.push_back((uint8_t)c);
-	payload.push_back(0); // null terminator
+	payload.push_back(0);
 	return make_box("hdlr", payload);
 }
 
-// Rebuild a mdia box replacing its hdlr name.
-static std::vector<uint8_t>
-rebuild_mdia_box(const uint8_t *mdia, uint32_t sz, const std::string &new_name)
+bool xmp_write_hdlr_names(const std::string &mp4_path)
 {
-	std::vector<uint8_t> children;
-	size_t p = 8;
-	while (p + 8 <= sz) {
-		uint32_t csz = u32be(mdia + p);
-		if (csz < 8 || p + csz > sz) break;
-		if (type_eq(mdia + p, "hdlr")) {
-			auto new_hdlr = rebuild_hdlr_box(mdia + p, csz, new_name);
-			children.insert(children.end(), new_hdlr.begin(), new_hdlr.end());
-		} else {
-			children.insert(children.end(), mdia + p, mdia + p + csz);
-		}
-		p += csz;
-	}
-	return make_box("mdia", children);
-}
-
-// Rebuild a trak box replacing its mdia's hdlr name.
-static std::vector<uint8_t>
-rebuild_trak_box(const uint8_t *trak, uint32_t sz, const std::string &new_name)
-{
-	std::vector<uint8_t> children;
-	size_t p = 8;
-	while (p + 8 <= sz) {
-		uint32_t csz = u32be(trak + p);
-		if (csz < 8 || p + csz > sz) break;
-		if (type_eq(trak + p, "mdia")) {
-			auto new_mdia = rebuild_mdia_box(trak + p, csz, new_name);
-			children.insert(children.end(), new_mdia.begin(), new_mdia.end());
-		} else {
-			children.insert(children.end(), trak + p, trak + p + csz);
-		}
-		p += csz;
-	}
-	return make_box("trak", children);
-}
-
-bool xmp_write_hdlr_names(const std::string &mp4_path,
-                           const std::vector<std::string> &names)
-{
-	if (names.empty()) return false;
-
 	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ | GENERIC_WRITE,
 	                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
 	                       FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -987,8 +974,6 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 		CloseHandle(h); return false;
 	}
 
-	// Walk moov children; rebuild soun trak boxes with new names.
-	int                  audio_idx = 0;
 	bool                 any_changed = false;
 	std::vector<uint8_t> new_moov_children;
 
@@ -998,30 +983,64 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 		if (sz < 8 || pos + sz > moov_sz) break;
 
 		if (type_eq(mbuf.data() + pos, "trak")) {
-			// Determine if this trak is audio (soun)
-			bool is_soun = false;
 			const uint8_t *trak = mbuf.data() + pos;
-			size_t tp = 8;
-			while (tp + 8 <= sz) {
-				uint32_t tsz = u32be(trak + tp);
-				if (tsz < 8 || tp + tsz > sz) break;
-				if (type_eq(trak + tp, "mdia")) {
-					size_t mp = 8;
-					while (mp + 8 <= tsz) {
-						uint32_t msz = u32be(trak + tp + mp);
-						if (msz < 8 || mp + msz > tsz) break;
-						if (type_eq(trak + tp + mp, "hdlr") && msz >= 24 &&
-						    type_eq(trak + tp + mp + 16, "soun"))
-							is_soun = true;
-						mp += msz;
-					}
-				}
-				tp += tsz;
+
+			// Read trak/udta/name
+			std::string udta_name;
+			uint32_t udta_sz = 0;
+			const uint8_t *udta = find_child(trak + 8, sz - 8, "udta", &udta_sz);
+			if (udta) {
+				uint32_t name_sz = 0;
+				const uint8_t *name_box = find_child(udta + 8, udta_sz - 8, "name", &name_sz);
+				if (name_box) udta_name = read_name_box(name_box, name_sz);
 			}
 
-			if (is_soun && audio_idx < (int)names.size() &&
-			    !names[audio_idx].empty()) {
-				auto new_trak = rebuild_trak_box(trak, sz, names[audio_idx]);
+			// Find mdia/hdlr to check handler type
+			bool is_soun = false;
+			uint32_t mdia_sz = 0;
+			const uint8_t *mdia = find_child(trak + 8, sz - 8, "mdia", &mdia_sz);
+			if (mdia) {
+				uint32_t hdlr_sz = 0;
+				const uint8_t *hdlr = find_child(mdia + 8, mdia_sz - 8, "hdlr", &hdlr_sz);
+				if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 16, "soun"))
+					is_soun = true;
+			}
+
+			if (is_soun && !udta_name.empty()) {
+				// Rebuild trak: replace hdlr name inside mdia, keep everything else
+				std::vector<uint8_t> new_trak_children;
+				size_t tp = 8;
+				while (tp + 8 <= sz) {
+					uint32_t csz = u32be(trak + tp);
+					if (csz < 8 || tp + csz > sz) break;
+					if (type_eq(trak + tp, "mdia")) {
+						// Rebuild mdia: replace hdlr, keep everything else
+						std::vector<uint8_t> new_mdia_children;
+						size_t mp = 8;
+						while (mp + 8 <= csz) {
+							uint32_t msz = u32be(trak + tp + mp);
+							if (msz < 8 || mp + msz > csz) break;
+							if (type_eq(trak + tp + mp, "hdlr")) {
+								auto new_hdlr = rebuild_hdlr_box(trak + tp + mp, msz, udta_name);
+								new_mdia_children.insert(new_mdia_children.end(),
+								                          new_hdlr.begin(), new_hdlr.end());
+							} else {
+								new_mdia_children.insert(new_mdia_children.end(),
+								                          trak + tp + mp,
+								                          trak + tp + mp + msz);
+							}
+							mp += msz;
+						}
+						auto new_mdia = make_box("mdia", new_mdia_children);
+						new_trak_children.insert(new_trak_children.end(),
+						                         new_mdia.begin(), new_mdia.end());
+					} else {
+						new_trak_children.insert(new_trak_children.end(),
+						                         trak + tp, trak + tp + csz);
+					}
+					tp += csz;
+				}
+				auto new_trak = make_box("trak", new_trak_children);
 				new_moov_children.insert(new_moov_children.end(),
 				                         new_trak.begin(), new_trak.end());
 				any_changed = true;
@@ -1029,7 +1048,6 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 				new_moov_children.insert(new_moov_children.end(),
 				                         trak, trak + sz);
 			}
-			if (is_soun) audio_idx++;
 		} else {
 			new_moov_children.insert(new_moov_children.end(),
 			                         mbuf.data() + pos, mbuf.data() + pos + sz);
@@ -1048,11 +1066,11 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 		LARGE_INTEGER li{}; li.QuadPart = moov_off + (int64_t)new_moov.size();
 		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
 		SetEndOfFile(h);
+		CloseHandle(h);
 	} else {
 		// moov not at end — use temp file (rare for OBS recordings)
 		CloseHandle(h);
 		std::string tmp = mp4_path + ".opp_tmp";
-		// Read media data (everything before moov)
 		HANDLE hr = CreateFileA(mp4_path.c_str(), GENERIC_READ,
 		                        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
 		                        FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1064,13 +1082,12 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 			DeleteFileA(tmp.c_str());
 			return false;
 		}
-		// Copy everything except old moov
 		std::vector<uint8_t> buf(1 << 20);
 		LARGE_INTEGER li{}; SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
 		int64_t copied = 0;
 		while (copied < fsize) {
 			int64_t remaining = fsize - copied;
-			if (copied == moov_off) { // skip old moov
+			if (copied == moov_off) {
 				li.QuadPart = moov_off + moov_sz;
 				SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
 				copied = moov_off + moov_sz;
@@ -1085,7 +1102,6 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 			WriteFile(hw, buf.data(), got, &written, nullptr);
 			copied += got;
 		}
-		// Append new moov
 		DWORD ww = 0;
 		WriteFile(hw, new_moov.data(), (DWORD)new_moov.size(), &ww, nullptr);
 		CloseHandle(hr); CloseHandle(hw);
@@ -1093,6 +1109,5 @@ bool xmp_write_hdlr_names(const std::string &mp4_path,
 		            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 	}
 
-	CloseHandle(h);
 	return true;
 }

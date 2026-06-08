@@ -1,6 +1,5 @@
 #pragma once
 #include <string>
-#include <vector>
 
 /*
  * Pure C++ MP4 box manipulation — no external dependencies.
@@ -22,11 +21,10 @@ bool xmp_has_ours(const std::string &mp4_path);
 // Returns true if a patch was applied, false if nothing needed or on error.
 bool xmp_fix_tkhd_durations(const std::string &mp4_path);
 
-// Write OBS track names into each audio trak's hdlr name field.
-// names[0] = track 1 name, names[1] = track 2, etc.  Empty strings are skipped.
+// Write OBS track names into each audio trak's hdlr name field by reading
+// the existing trak/udta/name boxes OBS writes at record time.
 // Returns true if at least one name was written.
-bool xmp_write_hdlr_names(const std::string &mp4_path,
-                           const std::vector<std::string> &names);
+bool xmp_write_hdlr_names(const std::string &mp4_path);
 
 // Patch status values written to ADS (:obs-pp) and moov/udta/OBPS.
 // Each patch (trim, markers, names) uses one byte independently.
