@@ -56,6 +56,7 @@ void mp_setup_menu(void)
 	QAction *tog_cfr = sub->addAction("Auto CFR Normalization");
 	tog_cfr->setCheckable(true);
 	tog_cfr->setChecked(mp_get_auto_cfr() != 0);
+	tog_cfr->setToolTip("Normalizes variable frame rate recordings to a constant frame rate.\nNot needed for hardware encoders (NVENC, AMF, QSV) which are already CFR.");
 
 	sub->addSeparator();
 
