@@ -4,15 +4,15 @@ OBS plugin (Windows, 64-bit) that injects Premiere Pro-compatible XMP chapter ma
 
 ## What it does
 
-- On recording stop: reads chapters from [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) and writes `xmpDM:markers` metadata into the MP4's `moov.udta.XMP_` box
+- Reads chapters from [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) and writes `xmpDM:markers` metadata into the MP4's `moov.udta.XMP_` box
 - Fixes the AAC tail-drop A/V gap (~21 ms) via lossless stream copy trim
-- On OBS startup: remuxes any orphaned `.mkv` files and trims A/V on existing MP4s in the recording folder
 
 ## Requirements
 
 - OBS Studio 31.x (64-bit, Windows)
+For markers:
 - [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager)
-- Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format)
+- Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format) 
 
 ## Installation
 
@@ -26,7 +26,7 @@ Restart OBS.
 
 ## Usage
 
-The plugin runs automatically. Settings are in **Tools → Marker Patch**:
+The plugin runs automatically. Settings are in **Tools → Premiere Patch**:
 
 | Toggle | Default | Effect |
 |--------|---------|--------|
