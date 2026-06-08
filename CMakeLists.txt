@@ -24,11 +24,22 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Widgets)
 
+# FFmpeg — headers from deps, DLLs shipped by OBS (already in process at runtime)
+find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h REQUIRED)
+find_library(AVFORMAT_LIB avformat REQUIRED)
+find_library(AVCODEC_LIB  avcodec  REQUIRED)
+find_library(AVUTIL_LIB   avutil   REQUIRED)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${FFMPEG_INCLUDE_DIR})
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+  ${AVFORMAT_LIB} ${AVCODEC_LIB} ${AVUTIL_LIB})
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE src/plugin-main.c
           src/marker-patch.cpp
           src/menu.cpp
+          src/av_utils.cpp
+          src/xmp_box.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
