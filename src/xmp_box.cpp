@@ -663,10 +663,10 @@ bool xmp_fix_tkhd_durations(const std::string &mp4_path)
 	if (h == INVALID_HANDLE_VALUE) {
 		if (GetLastError() == ERROR_SHARING_VIOLATION) {
 			MessageBoxA(nullptr,
-			            "OBS Premiere Patch could not fix the video duration "
-			            "because the recording is open in another application.\n\n"
-			            "Close the file in Premiere Pro (or other apps), then "
-			            "use Tools \xE2\x86\x92 Marker Patch \xE2\x86\x92 Fix Trim on the file manually.",
+			            "OBS Premiere Patch could not patch the recording "
+			            "because it is open in another application.\n\n"
+			            "Close the file in Premiere Pro (or other apps) and try again "
+			            "via Tools \xE2\x86\x92 Premiere Patch \xE2\x86\x92 Patch File.",
 			            "OBS Premiere Patch \xE2\x80\x94 File In Use",
 			            MB_OK | MB_ICONWARNING);
 		}
