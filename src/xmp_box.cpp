@@ -474,9 +474,19 @@ static bool read_moov_only(HANDLE h, int64_t *moov_off, uint32_t *moov_sz,
 			li.QuadPart = pos;
 			SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
 			if (!ReadFile(h, hdr, 8, &got, nullptr) || got < 8) break;
-			uint32_t sz = u32be(hdr);
+			uint32_t sz32 = u32be(hdr);
+			int64_t  sz   = sz32;
+			if (sz32 == 1) {
+				// Extended 64-bit size: next 8 bytes hold the real size
+				uint8_t ext[8] = {};
+				if (!ReadFile(h, ext, 8, &got, nullptr) || got < 8) break;
+				sz = (int64_t)(((uint64_t)ext[0] << 56) | ((uint64_t)ext[1] << 48) |
+				               ((uint64_t)ext[2] << 40) | ((uint64_t)ext[3] << 32) |
+				               ((uint64_t)ext[4] << 24) | ((uint64_t)ext[5] << 16) |
+				               ((uint64_t)ext[6] <<  8) |  (uint64_t)ext[7]);
+			}
 			if (sz < 8) break;
-			if (type_eq(hdr, "moov")) { *moov_off = pos; *moov_sz = sz; break; }
+			if (type_eq(hdr, "moov")) { *moov_off = pos; *moov_sz = sz32; break; }
 			pos += sz;
 		}
 	}
@@ -1006,7 +1016,7 @@ bool xmp_write_hdlr_names(const std::string &mp4_path)
 			if (mdia) {
 				uint32_t hdlr_sz = 0;
 				const uint8_t *hdlr = find_child(mdia + 8, mdia_sz - 8, "hdlr", &hdlr_sz);
-				if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 16, "soun"))
+				if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 12, "soun"))
 					is_soun = true;
 			}
 
@@ -1517,7 +1527,7 @@ bool xmp_normalize_stts(const std::string &mp4_path)
 		if (mdia) {
 			uint32_t       hdlr_sz = 0;
 			const uint8_t *hdlr = find_child(mdia + 8, mdia_sz - 8, "hdlr", &hdlr_sz);
-			if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 16, "vide"))
+			if (hdlr && hdlr_sz >= 24 && type_eq(hdlr + 12, "vide"))
 				is_vide = true;
 		}
 
