@@ -11,9 +11,8 @@ OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 ## Requirements
 
 - OBS Studio 31.x (64-bit, Windows)
-- Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format)
 
-Chapter markers can be added during recording via **Settings → Hotkeys → Add Chapter Marker**, or with the [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) plugin.
+Chapter markers require recording format **hybrid_mp4** (Advanced Output Settings → Recording Format). They can be added during recording via **Settings → Hotkeys → Add Chapter Marker**, or with the [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) plugin.
 
 ## Installation
 
