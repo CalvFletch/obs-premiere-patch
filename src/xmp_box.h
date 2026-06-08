@@ -46,7 +46,7 @@ bool xmp_normalize_stts(const std::string &mp4_path);
 #define OPP_STATUS_NONE      00  // not yet started
 #define OPP_STATUS_PATCHING  10  // started, not finished (crash here → retry)
 #define OPP_STATUS_DONE      11  // finished successfully
-
+#define OPP_STATUS_N_A      110  // checked; source data absent -- skip permanently
 // Read status bytes [trim, markers, names, date] from ADS (fast) or OBPS box (fallback).
 // Returns false if neither source exists (old/non-OBS file → treat as unknown).
 bool xmp_read_status(const std::string &mp4_path,

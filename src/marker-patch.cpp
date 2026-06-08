@@ -254,7 +254,7 @@ xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 
 // Track names
-if (inject_names && names_st != OPP_STATUS_DONE) {
+if (inject_names && names_st != OPP_STATUS_DONE && names_st != OPP_STATUS_N_A) {
 names_st = OPP_STATUS_PATCHING;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_hdlr_names(path)) {
@@ -265,15 +265,15 @@ names_st = OPP_STATUS_DONE;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 } else {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Track name write failed or skipped: %s",
+        "[obs-premiere-patch] Track names N/A (no source data): %s",
         path.c_str());
-names_st = OPP_STATUS_NONE; // reset so next run retries
+names_st = OPP_STATUS_N_A;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 }
 
 // Creation date
-if (inject_date && date_st != OPP_STATUS_DONE) {
+if (inject_date && date_st != OPP_STATUS_DONE && date_st != OPP_STATUS_N_A) {
 date_st = OPP_STATUS_PATCHING;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_creation_date(path)) {
@@ -284,9 +284,9 @@ date_st = OPP_STATUS_DONE;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 } else {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Creation date write failed: %s",
+        "[obs-premiere-patch] Creation date N/A (no source data): %s",
         path.c_str());
-date_st = OPP_STATUS_NONE; // reset so next run retries
+date_st = OPP_STATUS_N_A;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 }
@@ -433,8 +433,8 @@ uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE, names_st = OPP_
 xmp_read_status(mp4, &trim_st, &markers_st, &names_st, &date_st);
 bool needs_trim    = s_auto_trim.load()    && trim_st    != OPP_STATUS_DONE;
 bool needs_markers = s_auto_markers.load() && markers_st != OPP_STATUS_DONE;
-bool needs_names   = s_auto_names.load()   && names_st   != OPP_STATUS_DONE;
-bool needs_date    = s_auto_date.load()    && date_st    != OPP_STATUS_DONE;
+bool needs_names   = s_auto_names.load()   && names_st   != OPP_STATUS_DONE && names_st   != OPP_STATUS_N_A;
+bool needs_date    = s_auto_date.load()    && date_st    != OPP_STATUS_DONE && date_st    != OPP_STATUS_N_A;
 uint8_t cfr_st   = read_cfr_status(mp4);
 bool needs_cfr   = s_auto_cfr.load()    && cfr_st    != OPP_STATUS_DONE;
 if (needs_trim || needs_markers || needs_names || needs_date || needs_cfr) {
