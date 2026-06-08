@@ -48,8 +48,8 @@ void mp_setup_menu(void)
 	sub->addSeparator();
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
-	QAction *act_folder = sub->addAction("Fix Folder...");
-	QAction *act_file   = sub->addAction("Fix File...");
+	QAction *act_folder = sub->addAction("Patch Folder...");
+	QAction *act_file   = sub->addAction("Patch File...");
 
 	// ── Connections ────────────────────────────────────────────────────────
 	QObject::connect(tog_markers, &QAction::toggled,
