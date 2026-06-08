@@ -21,10 +21,14 @@ if(ENABLE_FRONTEND_API)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 endif()
 
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Widgets)
+
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE src/plugin-main.c
           src/marker-patch.cpp
+          src/menu.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
