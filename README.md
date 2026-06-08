@@ -6,12 +6,14 @@ OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
 - **Chapter markers** — automatically translates OBS chapter markers into Premiere Pro's XMP format
 - **A/V sync fix** — corrects a timing issue that causes audio to be shorter than the video length
+- **Crash recovery** — if OBS crashes mid-recording, the file is automatically fixed on the next OBS launch
 
 ## Requirements
 
 - OBS Studio 31.x (64-bit, Windows)
 - Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format)
-- [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) — only needed for chapter markers
+
+Chapter markers can be added during recording via **Settings → Hotkeys → Add Chapter Marker**, or with the [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) plugin.
 
 ## Installation
 
