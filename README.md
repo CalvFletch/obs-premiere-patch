@@ -29,7 +29,7 @@ The plugin runs automatically after every recording. Settings are in **Tools →
 
 | Toggle | Default | Effect |
 |--------|---------|--------|
-| Auto-inject markers | On | Import chapter markers into Premiere Pro |
+| Auto-inject markers | On | Make chapter markers readable by Premiere Pro |
 | Auto A/V trim | On | Fix A/V sync on each recording |
 
 Manual fix actions are also available in the same submenu for processing existing files or folders.
