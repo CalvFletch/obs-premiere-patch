@@ -26,6 +26,7 @@
 
 #include <string>
 #include <vector>
+#include <array>
 #include <thread>
 #include <sstream>
 #include <cmath>
@@ -496,32 +497,46 @@ std::vector<std::string> mp4s, mkvs;
 scan_recursive(folder, ".mp4", mp4s);
 scan_recursive(folder, ".mkv", mkvs);
 
-int processed = 0;
+auto snap = [](const std::string &path) -> std::array<uint8_t,5> {
+	uint8_t t=0,m=0,n=0,d=0;
+	xmp_read_status(path, &t, &m, &n, &d);
+	return {t, m, n, d, read_cfr_status(path)};
+};
+
+int changed = 0;
 for (const auto &f : mp4s) {
-patch_mp4(f, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
-++processed;
+	auto before = snap(f);
+	patch_mp4(f, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
+	if (snap(f) != before) ++changed;
 }
 
 for (const auto &mkv : mkvs) {
-std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
-if (av_remux_to_mp4(mkv, mp4)) {
-patch_mp4(mp4, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
-++processed;
-}
+	std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
+	if (av_remux_to_mp4(mkv, mp4)) {
+		auto before = snap(mp4);
+		patch_mp4(mp4, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
+		if (snap(mp4) != before) ++changed;
+	}
 }
 
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Fix folder done: %d file(s)",
-        processed);
-if (cb) cb(processed);
+        "[obs-premiere-patch] Fix folder done: %d changed",
+        changed);
+if (cb) cb(changed);
 }
 
 static void fix_file_worker(std::string path, PatchOpts opts, PatchDoneCallback cb)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
         path.c_str());
+uint8_t t=0,m=0,n=0,d=0;
+xmp_read_status(path, &t, &m, &n, &d);
+std::array<uint8_t,5> before = {t, m, n, d, read_cfr_status(path)};
 patch_mp4(path, opts.markers, opts.trim, opts.names, opts.date, opts.cfr);
-if (cb) cb(1);
+uint8_t t2=0,m2=0,n2=0,d2=0;
+xmp_read_status(path, &t2, &m2, &n2, &d2);
+std::array<uint8_t,5> after = {t2, m2, n2, d2, read_cfr_status(path)};
+if (cb) cb(after != before ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------

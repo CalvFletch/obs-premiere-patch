@@ -145,7 +145,9 @@ void mp_setup_menu(void)
 			QMetaObject::invokeMethod(qApp, [processed]() {
 				QMessageBox::information(
 					nullptr, "Premiere Patch",
-					QString("Done! Processed %1 file(s).").arg(processed));
+					processed > 0
+						? QString("Done! Patched %1 file(s).").arg(processed)
+						: QString("All files already patched.\nNo changes applied."));
 			}, Qt::QueuedConnection);
 		});
 	});
@@ -160,7 +162,9 @@ void mp_setup_menu(void)
 			QMetaObject::invokeMethod(qApp, [processed]() {
 				QMessageBox::information(
 					nullptr, "Premiere Patch",
-					QString("Done! Processed %1 file(s).").arg(processed));
+					processed > 0
+						? QString("Done! Patched %1 file(s).").arg(processed)
+						: QString("All files already patched.\nNo changes applied."));
 			}, Qt::QueuedConnection);
 		});
 	});
