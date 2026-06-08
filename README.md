@@ -1,18 +1,18 @@
 # obs-premiere-patch
 
-OBS plugin (Windows, 64-bit) that injects Premiere Pro-compatible XMP chapter markers into recorded MP4 files.
+OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
 ## What it does
 
-- Reads chapters from [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) and writes `xmpDM:markers` metadata into the MP4's `moov.udta.XMP_` box
-- Fixes the AAC tail-drop A/V gap (~21 ms) via lossless stream copy trim
+- **Chapter markers** — automatically imports your OBS chapter markers into Premiere Pro's timeline
+- **A/V sync fix** — corrects a timing issue that causes audio and video to appear out of sync in Premiere Pro
+- **Crash recovery** — if OBS crashes mid-recording, the file is automatically fixed on the next OBS launch
 
 ## Requirements
 
 - OBS Studio 31.x (64-bit, Windows)
-For markers:
-- [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager)
-- Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format) 
+- Recording format: **hybrid_mp4** (Advanced Output Settings → Recording Format)
+- [streamup-record-chapter-manager](https://github.com/StreamUPTips/obs-record-chapter-manager) — only needed for chapter markers
 
 ## Installation
 
@@ -26,12 +26,12 @@ Restart OBS.
 
 ## Usage
 
-The plugin runs automatically. Settings are in **Tools → Premiere Patch**:
+The plugin runs automatically after every recording. Settings are in **Tools → Premiere Patch**:
 
 | Toggle | Default | Effect |
 |--------|---------|--------|
-| Auto-inject markers | On | Inject XMP on each recording stop |
-| Auto A/V trim | On | Trim video tail to audio duration |
+| Auto-inject markers | On | Import chapter markers into Premiere Pro |
+| Auto A/V trim | On | Fix A/V sync on each recording |
 
 Manual fix actions are also available in the same submenu for processing existing files or folders.
 
