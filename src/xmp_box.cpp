@@ -396,3 +396,513 @@ bool xmp_has_ours(const std::string &mp4_path)
 	}
 	return false;
 }
+
+// ---------------------------------------------------------------------------
+// OBPS status box  (moov/udta/OBPS, 12 bytes fixed)
+//
+//   offset  size  meaning
+//   0       4     box size = 12 (big-endian)
+//   4       4     type = 'O','B','P','S'
+//   8       1     trim_done    (0 = pending, 1 = done)
+//   9       1     markers_done (0 = pending, 1 = done)
+//   10      2     reserved = 0
+//
+// Because size is fixed, the status bytes can be updated with a 2-byte
+// in-place write — no moov rewrite needed after the initial injection.
+// ---------------------------------------------------------------------------
+
+// Return the file offset of the trim byte (offset+8) inside OBPS,
+// or -1 if no OBPS box is found.
+static int64_t find_obps_off(const uint8_t *moov_buf, uint32_t moov_sz,
+                              int64_t moov_file_off)
+{
+	size_t pos = 8; // skip moov header
+	while (pos + 8 <= moov_sz) {
+		uint32_t sz = u32be(moov_buf + pos);
+		if (sz < 8 || pos + sz > moov_sz) break;
+		if (type_eq(moov_buf + pos, "udta")) {
+			size_t udta_end = pos + sz;
+			size_t up       = pos + 8; // skip udta header
+			while (up + 8 <= udta_end) {
+				uint32_t usz = u32be(moov_buf + up);
+				if (usz < 8 || up + usz > udta_end) break;
+				if (type_eq(moov_buf + up, "OBPS") && usz >= 12)
+					return moov_file_off + (int64_t)up + 8;
+				up += usz;
+			}
+			return -1; // udta found, no OBPS
+		}
+		pos += sz;
+	}
+	return -1;
+}
+
+// Build udta inner payload with OBPS replaced/added (other children preserved).
+static std::vector<uint8_t>
+build_udta_with_obps(const uint8_t *udta_inner, size_t udta_inner_len,
+                     uint8_t trim_st, uint8_t markers_st)
+{
+	uint8_t              pl[4] = {trim_st, markers_st, 0, 0};
+	std::vector<uint8_t> obps_box =
+		make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
+
+	std::vector<uint8_t> out;
+	size_t               pos = 0;
+	while (pos + 8 <= udta_inner_len) {
+		uint32_t sz = u32be(udta_inner + pos);
+		if (sz < 8 || pos + sz > udta_inner_len) break;
+		if (!type_eq(udta_inner + pos, "OBPS"))
+			out.insert(out.end(), udta_inner + pos, udta_inner + pos + sz);
+		pos += sz;
+	}
+	out.insert(out.end(), obps_box.begin(), obps_box.end());
+	return out;
+}
+
+// Helper: scan box headers (8 bytes each) to find moov, then read it.
+// Returns INVALID_HANDLE_VALUE on error; sets moov_off/moov_sz.
+static bool read_moov_only(HANDLE h, int64_t *moov_off, uint32_t *moov_sz,
+                            std::vector<uint8_t> *mbuf)
+{
+	*moov_off = -1;
+	{
+		int64_t pos = 0;
+		uint8_t hdr[8];
+		for (;;) {
+			DWORD        got = 0;
+			LARGE_INTEGER li{};
+			li.QuadPart = pos;
+			SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+			if (!ReadFile(h, hdr, 8, &got, nullptr) || got < 8) break;
+			uint32_t sz = u32be(hdr);
+			if (sz < 8) break;
+			if (type_eq(hdr, "moov")) { *moov_off = pos; *moov_sz = sz; break; }
+			pos += sz;
+		}
+	}
+	if (*moov_off < 0 || *moov_sz > 256u * 1024 * 1024) return false;
+	mbuf->resize(*moov_sz);
+	DWORD        got = 0;
+	LARGE_INTEGER li{};
+	li.QuadPart = *moov_off;
+	SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+	ReadFile(h, mbuf->data(), *moov_sz, &got, nullptr);
+	return got == *moov_sz;
+}
+
+bool xmp_read_status(const std::string &mp4_path,
+                     uint8_t *trim_st, uint8_t *markers_st)
+{
+	*trim_st = *markers_st = OPP_STATUS_NONE;
+
+	// --- Fast path: NTFS Alternate Data Stream ---
+	std::string ads = mp4_path + ":obs-pp";
+	HANDLE ha = CreateFileA(ads.c_str(), GENERIC_READ,
+	                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+	                        nullptr, OPEN_EXISTING,
+	                        FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (ha != INVALID_HANDLE_VALUE) {
+		uint8_t flags[2]; DWORD got = 0;
+		ReadFile(ha, flags, 2, &got, nullptr);
+		CloseHandle(ha);
+		if (got >= 2) {
+			*trim_st    = flags[0];
+			*markers_st = flags[1];
+			return true;
+		}
+	}
+
+	// --- Fallback: OBPS box inside moov/udta ---
+	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ,
+	                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+	                       nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return false;
+
+	int64_t              moov_off; uint32_t moov_sz;
+	std::vector<uint8_t> mbuf;
+	if (!read_moov_only(h, &moov_off, &moov_sz, &mbuf)) {
+		CloseHandle(h); return false;
+	}
+	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
+	if (status_off < 0) { CloseHandle(h); return false; }
+
+	uint8_t flags[2]; DWORD got2 = 0;
+	LARGE_INTEGER li{}; li.QuadPart = status_off;
+	SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+	ReadFile(h, flags, 2, &got2, nullptr);
+	CloseHandle(h);
+	if (got2 < 2) return false;
+	*trim_st    = flags[0];
+	*markers_st = flags[1];
+	return true;
+}
+
+bool xmp_write_status(const std::string &mp4_path,
+                      uint8_t trim_st, uint8_t markers_st)
+{
+	uint8_t flags[2] = {trim_st, markers_st};
+
+	// --- Always write ADS (works before moov exists, O(1) seek+write) ---
+	{
+		std::string ads = mp4_path + ":obs-pp";
+		HANDLE ha = CreateFileA(ads.c_str(), GENERIC_WRITE,
+		                        FILE_SHARE_READ, nullptr,
+		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (ha != INVALID_HANDLE_VALUE) {
+			DWORD w; WriteFile(ha, flags, 2, &w, nullptr);
+			CloseHandle(ha);
+		}
+	}
+
+	// --- Also update OBPS box in moov if it exists (durable fallback) ---
+	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+	                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return true; // ADS write succeeded, that's enough
+
+	int64_t              moov_off; uint32_t moov_sz;
+	std::vector<uint8_t> mbuf;
+	if (!read_moov_only(h, &moov_off, &moov_sz, &mbuf)) {
+		CloseHandle(h); return true; // no moov yet (recording in progress), ok
+	}
+
+	// If OBPS already exists: 2-byte in-place write.
+	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
+	if (status_off >= 0) {
+		file_write_at(h, status_off, flags, 2);
+		CloseHandle(h); return true;
+	}
+
+	// OBPS doesn't exist — rebuild moov/udta to inject it.
+	BoxInfo udta = find_box_in_buf(mbuf.data(), moov_sz, "udta", 8);
+	std::vector<uint8_t> new_udta_inner;
+	if (udta.found) {
+		new_udta_inner = build_udta_with_obps(
+			mbuf.data() + udta.offset + 8,
+			(size_t)udta.total_size - 8,
+			trim_st, markers_st);
+	} else {
+		uint8_t pl[4] = {trim_st, markers_st, 0, 0};
+		new_udta_inner = make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
+	}
+	std::vector<uint8_t> new_udta  = make_box("udta", new_udta_inner);
+	std::vector<uint8_t> moov_children;
+	size_t pos = 8;
+	while (pos + 8 <= moov_sz) {
+		uint32_t sz = u32be(mbuf.data() + pos);
+		if (sz < 8 || pos + sz > moov_sz) break;
+		if (!type_eq(mbuf.data() + pos, "udta"))
+			moov_children.insert(moov_children.end(),
+			                     mbuf.data() + pos, mbuf.data() + pos + sz);
+		pos += sz;
+	}
+	moov_children.insert(moov_children.end(), new_udta.begin(), new_udta.end());
+	std::vector<uint8_t> new_moov = make_box("moov", moov_children);
+
+	int64_t fsize        = file_size(h);
+	bool    moov_at_end  = (moov_off + (int64_t)moov_sz >= fsize - 8);
+	if (moov_at_end) {
+		file_write_at(h, moov_off, new_moov.data(), (DWORD)new_moov.size());
+		LARGE_INTEGER li{}; li.QuadPart = moov_off + (int64_t)new_moov.size();
+		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+		SetEndOfFile(h);
+	}
+	CloseHandle(h);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// xmp_fix_tkhd_durations
+// ---------------------------------------------------------------------------
+// Aligns all tracks to the last complete video frame within the audio content.
+//
+// Strategy:
+//   1. Compute target_frames = floor(audio_presented_samples / samples_per_frame)
+//   2. target_dur = target_frames * samples_per_frame  (exact integer in audio ts)
+//   3. Change movie timescale to audio_ts (e.g. 48000) so target_dur is
+//      representable without rounding — this is the ONLY way to make Premiere
+//      show both video (frame-snapped) and audio (sample-exact) at the same point.
+//   4. Patch in-place: mvhd ts+dur, video tkhd, all audio tkhd+elst_seg,
+//      all other tkhd+elst_seg scaled by (new_ts / old_ts).
+//
+// If the file is locked by another app a warning MessageBox is shown.
+
+static uint64_t u64be(const uint8_t *p)
+{
+	return ((uint64_t)p[0] << 56) | ((uint64_t)p[1] << 48) |
+	       ((uint64_t)p[2] << 40) | ((uint64_t)p[3] << 32) |
+	       ((uint64_t)p[4] << 24) | ((uint64_t)p[5] << 16) |
+	       ((uint64_t)p[6] << 8)  |  (uint64_t)p[7];
+}
+
+static void pu64be(uint8_t *p, uint64_t v)
+{
+	for (int i = 7; i >= 0; --i, v >>= 8)
+		p[i] = (uint8_t)(v & 0xFF);
+}
+
+static bool write_at(HANDLE h, int64_t offset, const void *buf, DWORD n)
+{
+	LARGE_INTEGER li;
+	li.QuadPart = offset;
+	if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN))
+		return false;
+	DWORD wrote = 0;
+	return WriteFile(h, buf, n, &wrote, nullptr) && wrote == n;
+}
+
+bool xmp_fix_tkhd_durations(const std::string &mp4_path)
+{
+	// --- Open file ---
+	HANDLE h = CreateFileA(mp4_path.c_str(),
+	                       GENERIC_READ | GENERIC_WRITE,
+	                       FILE_SHARE_READ,
+	                       nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) {
+		if (GetLastError() == ERROR_SHARING_VIOLATION) {
+			MessageBoxA(nullptr,
+			            "OBS Premiere Patch could not fix the video duration "
+			            "because the recording is open in another application.\n\n"
+			            "Close the file in Premiere Pro (or other apps), then "
+			            "use Tools \xE2\x86\x92 Marker Patch \xE2\x86\x92 Fix Trim on the file manually.",
+			            "OBS Premiere Patch \xE2\x80\x94 File In Use",
+			            MB_OK | MB_ICONWARNING);
+		}
+		return false;
+	}
+
+	// --- Scan box headers to find moov (reads 8 bytes per box, skips mdat) ---
+	int64_t  moov_off = -1;
+	uint32_t moov_sz  = 0;
+	{
+		int64_t pos = 0;
+		uint8_t hdr[8];
+		while (true) {
+			DWORD    got = 0;
+			LARGE_INTEGER li{}; li.QuadPart = pos;
+			SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+			if (!ReadFile(h, hdr, 8, &got, nullptr) || got < 8) break;
+			uint32_t sz = u32be(hdr);
+			if (sz < 8) break;
+			if (type_eq(hdr, "moov")) { moov_off = pos; moov_sz = sz; break; }
+			pos += sz;
+		}
+	}
+	if (moov_off < 0) { CloseHandle(h); return false; }
+
+	// --- Read only the moov box (typically ~100 KB, not the whole file) ---
+	std::vector<uint8_t> mbuf(moov_sz);
+	{
+		DWORD    got = 0;
+		LARGE_INTEGER li{}; li.QuadPart = moov_off;
+		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+		if (!ReadFile(h, mbuf.data(), moov_sz, &got, nullptr) || got != moov_sz) {
+			CloseHandle(h); return false;
+		}
+	}
+	const uint8_t *moov = mbuf.data();
+
+	// --- Find mvhd ---
+	int64_t  mvhd_ts_off  = -1;
+	int64_t  mvhd_dur_off = -1;
+	int      mvhd_ver     = -1;
+	uint32_t movie_ts     = 0;
+	{
+		int64_t pos = 8;
+		while (pos + 8 <= (int64_t)moov_sz) {
+			uint32_t sz = u32be(moov + pos);
+			if (sz < 8) break;
+			if (type_eq(moov + pos, "mvhd")) {
+				mvhd_ver = moov[pos + 8];
+				if (mvhd_ver == 0) {
+					movie_ts     = u32be(moov + pos + 20);
+					mvhd_ts_off  = moov_off + pos + 20;
+					mvhd_dur_off = moov_off + pos + 24;
+				} else {
+					movie_ts     = u32be(moov + pos + 28);
+					mvhd_ts_off  = moov_off + pos + 28;
+					mvhd_dur_off = moov_off + pos + 32;
+				}
+				break;
+			}
+			pos += sz;
+		}
+	}
+	if (mvhd_ts_off < 0 || movie_ts == 0) { CloseHandle(h); return false; }
+
+	// --- Collect trak info ---
+	struct TI {
+		char     hdlr[5];
+		int      tkhd_ver, elst_ver;
+		int64_t  tkhd_dur_off;   // -1 if absent
+		int64_t  elst_seg_off;   // -1 if absent
+		uint64_t tkhd_dur, elst_seg, elst_mt;
+		uint32_t mdhd_ts;
+		uint64_t mdhd_dur;
+	};
+	std::vector<TI> traks;
+
+	{
+		int64_t pos = 8;
+		while (pos + 8 <= (int64_t)moov_sz) {
+			uint32_t sz = u32be(moov + pos);
+			if (sz < 8 || pos + (int64_t)sz > (int64_t)moov_sz) break;
+			if (!type_eq(moov + pos, "trak")) { pos += sz; continue; }
+
+			TI ti{};
+			ti.hdlr[0] = '?'; ti.hdlr[4] = '\0';
+			ti.tkhd_ver = -1; ti.elst_ver = -1;
+			ti.tkhd_dur_off = -1; ti.elst_seg_off = -1;
+			ti.tkhd_dur = 0; ti.elst_seg = 0; ti.elst_mt = 0;
+			ti.mdhd_ts = 0; ti.mdhd_dur = 0;
+
+			int64_t trak_end = pos + (int64_t)sz;
+			int64_t cp = pos + 8;
+			while (cp + 8 <= trak_end) {
+				uint32_t csz = u32be(moov + cp);
+				if (csz < 8 || cp + (int64_t)csz > trak_end) break;
+
+				if (type_eq(moov + cp, "tkhd")) {
+					ti.tkhd_ver = moov[cp + 8];
+					if (ti.tkhd_ver == 0) {
+						ti.tkhd_dur     = u32be(moov + cp + 28);
+						ti.tkhd_dur_off = moov_off + cp + 28;
+					} else {
+						ti.tkhd_dur     = u64be(moov + cp + 36);
+						ti.tkhd_dur_off = moov_off + cp + 36;
+					}
+				}
+				if (type_eq(moov + cp, "edts")) {
+					int64_t ep = cp + 8, edts_end = cp + (int64_t)csz;
+					while (ep + 8 <= edts_end) {
+						uint32_t esz = u32be(moov + ep);
+						if (esz < 8 || ep + (int64_t)esz > edts_end) break;
+						if (type_eq(moov + ep, "elst")) {
+							ti.elst_ver = moov[ep + 8];
+							if (ti.elst_ver == 0) {
+								ti.elst_seg     = u32be(moov + ep + 16);
+								ti.elst_mt      = u32be(moov + ep + 20);
+								ti.elst_seg_off = moov_off + ep + 16;
+							} else {
+								ti.elst_seg     = u64be(moov + ep + 16);
+								ti.elst_mt      = u64be(moov + ep + 24);
+								ti.elst_seg_off = moov_off + ep + 16;
+							}
+						}
+						ep += esz;
+					}
+				}
+				if (type_eq(moov + cp, "mdia")) {
+					int64_t dp = cp + 8, mdia_end = cp + (int64_t)csz;
+					while (dp + 8 <= mdia_end) {
+						uint32_t dsz = u32be(moov + dp);
+						if (dsz < 8) break;
+						if (type_eq(moov + dp, "hdlr") && dp + 20 <= trak_end) {
+							ti.hdlr[0] = (char)moov[dp + 16]; ti.hdlr[1] = (char)moov[dp + 17];
+							ti.hdlr[2] = (char)moov[dp + 18]; ti.hdlr[3] = (char)moov[dp + 19];
+						}
+						if (type_eq(moov + dp, "mdhd")) {
+							int dver = moov[dp + 8];
+							if (dver == 0) {
+								ti.mdhd_ts  = u32be(moov + dp + 20);
+								ti.mdhd_dur = u32be(moov + dp + 24);
+							} else {
+								ti.mdhd_ts  = u32be(moov + dp + 28);
+								ti.mdhd_dur = u64be(moov + dp + 32);
+							}
+						}
+						dp += dsz;
+					}
+				}
+				cp += csz;
+			}
+			if (ti.tkhd_dur_off >= 0)
+				traks.push_back(ti);
+			pos += sz;
+		}
+	}
+
+	// --- Find first video and first audio trak ---
+	TI *vide = nullptr, *soun = nullptr;
+	for (auto &ti : traks) {
+		if (!vide && ti.hdlr[0]=='v' && ti.hdlr[1]=='i') vide = &ti;
+		if (!soun && ti.hdlr[0]=='s' && ti.hdlr[1]=='o' && ti.elst_seg_off >= 0) soun = &ti;
+	}
+	if (!vide || !soun || soun->mdhd_ts == 0 || vide->mdhd_ts == 0) {
+		CloseHandle(h); return false;
+	}
+
+	// --- Compute target duration ---
+	// audio_ts = audio sample rate (e.g. 48000)
+	// video_fps = video mdhd timescale (OBS uses 1 tick per frame, ts = fps)
+	uint32_t audio_ts  = soun->mdhd_ts;
+	uint32_t video_fps = vide->mdhd_ts;
+	if (audio_ts % video_fps != 0) { CloseHandle(h); return false; }
+	uint64_t spf = audio_ts / video_fps; // samples per frame, e.g. 800
+
+	// Priming skip = elst media_time (in audio samples, already in audio ts)
+	uint64_t priming = soun->elst_mt;
+	if (priming >= soun->mdhd_dur) { CloseHandle(h); return false; }
+	uint64_t audio_presented = soun->mdhd_dur - priming; // content samples
+
+	uint64_t target_frames = audio_presented / spf;       // floor
+	uint64_t target_dur    = target_frames * spf;         // exact, in audio_ts units
+
+	// We change movie timescale to audio_ts so target_dur is exact (no rounding).
+	// E.g. movie_ts 1000 → 48000: 431 frames × 800 = 344800 (representable exactly).
+	uint32_t new_movie_ts = audio_ts;
+	if (new_movie_ts % movie_ts != 0) { CloseHandle(h); return false; }
+	uint64_t scale = new_movie_ts / movie_ts; // e.g. 48
+
+	// Sanity: video track (in new ts) must be longer than target_dur
+	uint64_t vide_in_new = vide->tkhd_dur * scale;
+	if (vide_in_new <= target_dur) { CloseHandle(h); return false; }
+	double gap_s = (double)(vide_in_new - target_dur) / (double)new_movie_ts;
+	if (gap_s < 0.001 || gap_s > 0.500) { CloseHandle(h); return false; }
+
+	// --- Patch in-place ---
+	bool ok = true;
+
+	// mvhd timescale → new_movie_ts
+	if (scale != 1) {
+		uint8_t ts_buf[4];
+		pu32be(ts_buf, new_movie_ts);
+		ok = ok && write_at(h, mvhd_ts_off, ts_buf, 4);
+	}
+	// mvhd duration → target_dur
+	{
+		uint8_t d[8]; DWORD n;
+		if (mvhd_ver == 0) { pu32be(d, (uint32_t)target_dur); n = 4; }
+		else               { pu64be(d, target_dur);            n = 8; }
+		ok = ok && write_at(h, mvhd_dur_off, d, n);
+	}
+
+	for (auto &ti : traks) {
+		bool is_av   = (ti.hdlr[0]=='v' && ti.hdlr[1]=='i') ||
+		               (ti.hdlr[0]=='s' && ti.hdlr[1]=='o');
+		bool is_soun = (ti.hdlr[0]=='s' && ti.hdlr[1]=='o');
+
+		uint64_t new_tkhd = is_av ? target_dur : (ti.tkhd_dur * scale);
+
+		// tkhd duration
+		if (ti.tkhd_dur_off >= 0) {
+			uint8_t d[8]; DWORD n;
+			if (ti.tkhd_ver == 0) { pu32be(d, (uint32_t)new_tkhd); n = 4; }
+			else                  { pu64be(d, new_tkhd);            n = 8; }
+			ok = ok && write_at(h, ti.tkhd_dur_off, d, n);
+		}
+		// elst seg_duration: video+audio → target_dur; others → scale old value
+		if (ti.elst_seg_off >= 0) {
+			uint64_t new_seg = is_av ? target_dur : (ti.elst_seg * scale);
+			uint8_t d[8]; DWORD n;
+			if (ti.elst_ver == 0) { pu32be(d, (uint32_t)new_seg); n = 4; }
+			else                  { pu64be(d, new_seg);            n = 8; }
+			ok = ok && write_at(h, ti.elst_seg_off, d, n);
+		}
+	}
+
+	CloseHandle(h);
+	return ok;
+}

@@ -178,21 +178,36 @@ static void patch_mp4(const std::string &path,
                       bool               inject_markers = true,
                       bool               do_av_trim     = true)
 {
-// A/V trim (lossless, skips automatically if gap is outside 1-250 ms)
-if (do_av_trim) {
-if (av_trim_to_audio(path))
+// Read inline status — skip work already done in a previous run.
+uint8_t trim_st    = OPP_STATUS_NONE;
+uint8_t markers_st = OPP_STATUS_NONE;
+xmp_read_status(path, &trim_st, &markers_st);
+
+// A/V trim
+if (do_av_trim && trim_st != OPP_STATUS_DONE) {
+xmp_write_status(path, OPP_STATUS_PATCHING, markers_st);
+if (xmp_fix_tkhd_durations(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] A/V trim applied: %s",
+        "[obs-premiere-patch] Duration fixed: %s",
         path.c_str());
+trim_st = OPP_STATUS_DONE;
+xmp_write_status(path, trim_st, markers_st);
+}
 }
 
 if (!inject_markers)
 return;
 
-// Skip files already carrying our XMP
+// Markers: status box wins; fall back to XMP scan for old files.
+if (markers_st == OPP_STATUS_DONE) {
+obs_log(LOG_INFO,
+        "[obs-premiere-patch] Markers already done (status), skipping: %s",
+        path.c_str());
+return;
+}
 if (xmp_has_ours(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Already patched, skipping: %s",
+        "[obs-premiere-patch] Already patched (XMP), skipping: %s",
         path.c_str());
 return;
 }
@@ -208,11 +223,13 @@ return;
 double      ts  = av_get_video_timescale(path);
 std::string xmp = build_xmp(chapters, ts);
 
+xmp_write_status(path, trim_st, OPP_STATUS_PATCHING);
 if (xmp_inject(path, xmp)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Injected %zu XMP marker(s) "
         "(timescale=%.0f) into %s",
         chapters.size(), ts, path.c_str());
+xmp_write_status(path, trim_st, OPP_STATUS_DONE);
 } else {
 obs_log(LOG_ERROR,
         "[obs-premiere-patch] XMP injection failed for %s",
@@ -228,6 +245,9 @@ static void patch_recording(std::string path)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Monitoring: %s", path.c_str());
 wait_for_stable(path, 60);
+// ADS already stamped {00,00} at recording start.
+// Now that moov exists, write_status also injects OBPS into moov.
+xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE);
 patch_mp4(path, s_auto_markers.load(), s_auto_trim.load());
 }
 
@@ -313,13 +333,13 @@ FindClose(hf);
 }
 int trimmed = 0;
 for (const auto &mp4 : mp4s) {
-if (av_trim_to_audio(mp4))
+if (xmp_fix_tkhd_durations(mp4))
 trimmed++;
 }
 if (trimmed > 0)
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Startup scan: "
-        "trimmed %d file(s)",
+        "fixed durations in %d file(s)",
         trimmed);
 }
 
@@ -510,6 +530,29 @@ return result;
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ADS status helpers  (video.mp4:obs-pp — 2 bytes, writable during recording)
+// The ADS is written at RECORDING_STARTED so crash detection requires zero
+// extra files.  read/write wrappers delegate to xmp_read/write_status.
+// ---------------------------------------------------------------------------
+
+// Write ADS-only pending flag directly to file (moov doesn't exist yet).
+// xmp_write_status also writes ADS, but at recording start we want just ADS
+// (calling xmp_write_status before moov exists is fine — it skips OBPS quietly).
+static void stamp_ads_pending(const std::string &mp4_path)
+{
+std::string ads = mp4_path + ":obs-pp";
+HANDLE ha = CreateFileA(ads.c_str(), GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        nullptr, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+if (ha == INVALID_HANDLE_VALUE) return;
+uint8_t flags[2] = {OPP_STATUS_NONE, OPP_STATUS_NONE};
+DWORD w;
+WriteFile(ha, flags, 2, &w, nullptr);
+CloseHandle(ha);
+}
+
 void mp_start(void)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] started");
@@ -544,6 +587,18 @@ obs_log(LOG_INFO, "[obs-premiere-patch] Auto-trim: %s",
         on ? "ON" : "OFF");
 }
 
+void mp_on_recording_started(void)
+{
+std::string path = get_recording_path();
+if (path.empty()) return;
+// Stamp ADS immediately — works while OBS holds the main file handle.
+// This is the crash-recovery anchor: if OBS dies before recording stops,
+// the ADS {0,0} survives and startup_scan will detect + process the file.
+stamp_ads_pending(path);
+obs_log(LOG_INFO, "[obs-premiere-patch] Recording started (ADS stamped): %s",
+        path.c_str());
+}
+
 void mp_on_recording_stopped(void)
 {
 std::string path = get_recording_path();
@@ -570,6 +625,8 @@ std::thread([path]() { patch_recording(path); }).detach();
 
 void mp_on_obs_loaded(void)
 {
+// No separate txt file needed — crash survivors are MP4s in the rec folder
+// whose ADS has trim=0 or markers=0.  startup_scan handles them.
 std::string rec_folder;
 
 config_t *profile = obs_frontend_get_profile_config();

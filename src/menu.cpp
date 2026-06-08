@@ -1,7 +1,7 @@
 /*
- * obs-marker-patch  —  menu.cpp
+ * obs-premiere-patch  —  menu.cpp
  *
- * Builds the "Marker Patch" submenu inside OBS's Tools menu.
+ * Builds the "Premiere Patch" submenu inside OBS's Tools menu.
  * Called once from obs_module_load via mp_setup_menu().
  */
 
@@ -22,19 +22,19 @@ void mp_setup_menu(void)
 		obs_frontend_get_main_window());
 	if (!main_win) {
 		obs_log(LOG_WARNING,
-		        "[obs-marker-patch] mp_setup_menu: no main window");
+		        "[obs-premiere-patch] mp_setup_menu: no main window");
 		return;
 	}
 
 	QMenu *tools_menu = main_win->findChild<QMenu *>("menuTools");
 	if (!tools_menu) {
 		obs_log(LOG_WARNING,
-		        "[obs-marker-patch] mp_setup_menu: "
+		        "[obs-premiere-patch] mp_setup_menu: "
 		        "Tools menu not found");
 		return;
 	}
 
-	QMenu *sub = new QMenu("Marker Patch", main_win);
+	QMenu *sub = new QMenu("Premiere Patch", main_win);
 
 	// ── Toggles ────────────────────────────────────────────────────────────
 	QAction *tog_markers = sub->addAction("Auto-Inject Markers");

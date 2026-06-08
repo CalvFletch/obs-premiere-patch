@@ -16,3 +16,23 @@ bool xmp_inject(const std::string &mp4_path, const std::string &xmp_content);
 
 // Returns true if the file already contains our obs-premiere-patch XMP.
 bool xmp_has_ours(const std::string &mp4_path);
+
+// Patch the video tkhd duration (and mvhd) to match the audio tkhd duration.
+// Returns true if a patch was applied, false if nothing needed or on error.
+bool xmp_fix_tkhd_durations(const std::string &mp4_path);
+
+// Patch status values written to ADS (:obs-pp) and moov/udta/OBPS.
+// Each patch (trim, markers) uses one byte independently.
+#define OPP_STATUS_NONE      00  // not yet started
+#define OPP_STATUS_PATCHING  10  // started, not finished (crash here → retry)
+#define OPP_STATUS_DONE      11  // finished successfully
+
+// Read status bytes [trim, markers] from ADS (fast) or OBPS box (fallback).
+// Returns false if neither source exists (old/non-OBS file → treat as unknown).
+bool xmp_read_status(const std::string &mp4_path,
+                     uint8_t *trim_st, uint8_t *markers_st);
+
+// Write status bytes [trim, markers].  ADS is always written (works before moov).
+// OBPS in moov is updated if it already exists, or injected if moov is present.
+bool xmp_write_status(const std::string &mp4_path,
+                      uint8_t trim_st, uint8_t markers_st);

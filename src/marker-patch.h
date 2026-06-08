@@ -9,6 +9,7 @@ void mp_start(void);
 void mp_stop(void);
 
 /* OBS event handlers */
+void mp_on_recording_started(void);
 void mp_on_recording_stopped(void);
 void mp_on_obs_loaded(void);
 

@@ -20,7 +20,9 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 static void on_frontend_event(enum obs_frontend_event event, void *unused)
 {
 	(void)unused;
-	if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED)
+	if (event == OBS_FRONTEND_EVENT_RECORDING_STARTED)
+		mp_on_recording_started();
+	else if (event == OBS_FRONTEND_EVENT_RECORDING_STOPPED)
 		mp_on_recording_stopped();
 	else if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
 		mp_on_obs_loaded();

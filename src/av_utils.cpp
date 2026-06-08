@@ -123,21 +123,42 @@ bool av_get_durations(const std::string &path, double &video_dur,
 		return false;
 	}
 
-	// Container duration covers all streams (video)
-	if (fmt->duration <= 0) {
-		avformat_close_input(&fmt);
-		return false;
+	// Video track duration (first video stream)
+	video_dur = -1.0;
+	for (unsigned i = 0; i < fmt->nb_streams; i++) {
+		AVStream *s = fmt->streams[i];
+		if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+			if (s->duration > 0 && s->time_base.den > 0) {
+				video_dur = (double)s->duration *
+				            av_q2d(s->time_base);
+			}
+			break;
+		}
 	}
-	video_dur = (double)fmt->duration / (double)AV_TIME_BASE;
+	if (video_dur <= 0.0) {
+		// Fall back to container duration
+		if (fmt->duration > 0)
+			video_dur = (double)fmt->duration / (double)AV_TIME_BASE;
+		else {
+			avformat_close_input(&fmt);
+			return false;
+		}
+	}
 
-	// First audio stream's own duration
-	audio_dur      = -1.0;
+	// First audio stream's presented duration = (raw_dur - priming_skip)
+	// The elst media_time encodes the AAC priming skip in stream samples.
+	// libavformat exposes this as s->start_time (negative = priming frames).
+	audio_dur = -1.0;
 	for (unsigned i = 0; i < fmt->nb_streams; i++) {
 		AVStream *s = fmt->streams[i];
 		if (s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
 			if (s->duration > 0 && s->time_base.den > 0) {
-				audio_dur = (double)s->duration *
-				            av_q2d(s->time_base);
+				double raw = (double)s->duration * av_q2d(s->time_base);
+				// start_time is negative by the priming delay
+				double priming = (s->start_time != AV_NOPTS_VALUE && s->start_time < 0)
+				                     ? -(double)s->start_time * av_q2d(s->time_base)
+				                     : 0.0;
+				audio_dur = raw - priming;
 			}
 			break;
 		}
@@ -349,8 +370,9 @@ bool av_trim_to_audio(const std::string &mp4_path)
 	AVPacket *pkt = av_packet_alloc();
 	bool      ok  = (pkt != nullptr);
 
-	// Tolerance: allow up to 100ms past audio_dur (keyframe alignment)
-	const double cutoff = audio_dur + 0.100;
+	// Allow one extra video frame past audio_dur to avoid cutting mid-frame.
+	// At 60fps one frame = ~16.7ms; use 50ms as a safe ceiling.
+	const double cutoff = audio_dur + 0.050;
 
 	while (ok) {
 		int ret = av_read_frame(ifmt, pkt);
