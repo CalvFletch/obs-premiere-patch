@@ -49,6 +49,10 @@ void mp_setup_menu(void)
 	tog_names->setCheckable(true);
 	tog_names->setChecked(mp_get_auto_names() != 0);
 
+	QAction *tog_date = sub->addAction("Auto Creation Date");
+	tog_date->setCheckable(true);
+	tog_date->setChecked(mp_get_auto_date() != 0);
+
 	sub->addSeparator();
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
@@ -62,6 +66,8 @@ void mp_setup_menu(void)
 	                 [](bool on) { mp_set_auto_trim(on ? 1 : 0); });
 	QObject::connect(tog_names, &QAction::toggled,
 	                 [](bool on) { mp_set_auto_names(on ? 1 : 0); });
+	QObject::connect(tog_date, &QAction::toggled,
+	                 [](bool on) { mp_set_auto_date(on ? 1 : 0); });
 	QObject::connect(act_folder, &QAction::triggered,
 	                 []() { mp_fix_folder(); });
 	QObject::connect(act_file, &QAction::triggered,

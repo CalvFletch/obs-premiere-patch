@@ -41,6 +41,7 @@
 static std::atomic<bool> s_auto_markers{true};
 static std::atomic<bool> s_auto_trim{true};
 static std::atomic<bool> s_auto_names{true};
+static std::atomic<bool> s_auto_date{true};
 
 #define OPP_CONFIG_SECTION "obs-premiere-patch"
 
@@ -185,38 +186,56 @@ return x.str();
 static void patch_mp4(const std::string &path,
                       bool               inject_markers = true,
                       bool               do_av_trim     = true,
-                      bool               inject_names   = false)
+                      bool               inject_names   = false,
+                      bool               inject_date    = false)
 {
 // Read inline status — skip work already done in a previous run.
 uint8_t trim_st    = OPP_STATUS_NONE;
 uint8_t markers_st = OPP_STATUS_NONE;
 uint8_t names_st   = OPP_STATUS_NONE;
-xmp_read_status(path, &trim_st, &markers_st, &names_st);
+uint8_t date_st    = OPP_STATUS_NONE;
+xmp_read_status(path, &trim_st, &markers_st, &names_st, &date_st);
 
 // A/V trim
 if (do_av_trim && trim_st != OPP_STATUS_DONE) {
-xmp_write_status(path, OPP_STATUS_PATCHING, markers_st, names_st);
+xmp_write_status(path, OPP_STATUS_PATCHING, markers_st, names_st, date_st);
 if (xmp_fix_tkhd_durations(path)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Duration fixed: %s",
         path.c_str());
 trim_st = OPP_STATUS_DONE;
-xmp_write_status(path, trim_st, markers_st, names_st);
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 }
 }
 
-// Track names (read from trak/udta/name boxes already in the file)
+// Track names
 if (inject_names && names_st != OPP_STATUS_DONE) {
-xmp_write_status(path, trim_st, markers_st, OPP_STATUS_PATCHING);
+xmp_write_status(path, trim_st, markers_st, OPP_STATUS_PATCHING, date_st);
 if (xmp_write_hdlr_names(path)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Track names written: %s",
         path.c_str());
 names_st = OPP_STATUS_DONE;
-xmp_write_status(path, trim_st, markers_st, names_st);
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 } else {
 obs_log(LOG_WARNING,
         "[obs-premiere-patch] Track name write failed or skipped: %s",
+        path.c_str());
+}
+}
+
+// Creation date
+if (inject_date && date_st != OPP_STATUS_DONE) {
+xmp_write_status(path, trim_st, markers_st, names_st, OPP_STATUS_PATCHING);
+if (xmp_write_creation_date(path)) {
+obs_log(LOG_INFO,
+        "[obs-premiere-patch] Creation date written: %s",
+        path.c_str());
+date_st = OPP_STATUS_DONE;
+xmp_write_status(path, trim_st, markers_st, names_st, date_st);
+} else {
+obs_log(LOG_WARNING,
+        "[obs-premiere-patch] Creation date write failed: %s",
         path.c_str());
 }
 }
@@ -249,13 +268,13 @@ return;
 double      ts  = av_get_video_timescale(path);
 std::string xmp = build_xmp(chapters, ts);
 
-xmp_write_status(path, trim_st, OPP_STATUS_PATCHING, names_st);
+xmp_write_status(path, trim_st, OPP_STATUS_PATCHING, names_st, date_st);
 if (xmp_inject(path, xmp)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Injected %zu XMP marker(s) "
         "(timescale=%.0f) into %s",
         chapters.size(), ts, path.c_str());
-xmp_write_status(path, trim_st, OPP_STATUS_DONE, names_st);
+xmp_write_status(path, trim_st, OPP_STATUS_DONE, names_st, date_st);
 } else {
 obs_log(LOG_ERROR,
         "[obs-premiere-patch] XMP injection failed for %s",
@@ -273,8 +292,8 @@ obs_log(LOG_INFO, "[obs-premiere-patch] Monitoring: %s", path.c_str());
 wait_for_stable(path, 60);
 // ADS already stamped {00,00,00} at recording start.
 // Now that moov exists, write_status also injects OBPS into moov.
-xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE);
-patch_mp4(path, s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load());
+xmp_write_status(path, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE);
+patch_mp4(path, s_auto_markers.load(), s_auto_trim.load(), s_auto_names.load(), s_auto_date.load());
 }
 
 static std::string get_recording_path()
@@ -333,7 +352,7 @@ if (av_remux_to_mp4(mkv, mp4)) {
 obs_log(LOG_INFO,
         "[obs-premiere-patch] Remuxed: %s",
         mp4.c_str());
-patch_mp4(mp4, true, true, s_auto_names.load());
+patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load());
 } else {
 obs_log(LOG_WARNING,
         "[obs-premiere-patch] Remux failed: %s",
@@ -359,13 +378,14 @@ FindClose(hf);
 }
 int patched = 0;
 for (const auto &mp4 : mp4s) {
-uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE, names_st = OPP_STATUS_NONE;
-xmp_read_status(mp4, &trim_st, &markers_st, &names_st);
+uint8_t trim_st = OPP_STATUS_NONE, markers_st = OPP_STATUS_NONE, names_st = OPP_STATUS_NONE, date_st = OPP_STATUS_NONE;
+xmp_read_status(mp4, &trim_st, &markers_st, &names_st, &date_st);
 bool needs_trim    = s_auto_trim.load()    && trim_st    != OPP_STATUS_DONE;
 bool needs_markers = s_auto_markers.load() && markers_st != OPP_STATUS_DONE;
 bool needs_names   = s_auto_names.load()   && names_st   != OPP_STATUS_DONE;
-if (needs_trim || needs_markers || needs_names) {
-patch_mp4(mp4, needs_markers, needs_trim, needs_names);
+bool needs_date    = s_auto_date.load()    && date_st    != OPP_STATUS_DONE;
+if (needs_trim || needs_markers || needs_names || needs_date) {
+patch_mp4(mp4, needs_markers, needs_trim, needs_names, needs_date);
 patched++;
 }
 }
@@ -424,12 +444,12 @@ scan_recursive(folder, ".mp4", mp4s);
 scan_recursive(folder, ".mkv", mkvs);
 
 for (const auto &f : mp4s)
-patch_mp4(f, true, true, s_auto_names.load());
+patch_mp4(f, true, true, s_auto_names.load(), s_auto_date.load());
 
 for (const auto &mkv : mkvs) {
 std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
 if (av_remux_to_mp4(mkv, mp4))
-patch_mp4(mp4, true, true, s_auto_names.load());
+patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load());
 }
 
 obs_log(LOG_INFO,
@@ -441,7 +461,7 @@ static void fix_file_worker(std::string path)
 {
 obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
         path.c_str());
-patch_mp4(path, true, true, s_auto_names.load());
+patch_mp4(path, true, true, s_auto_names.load(), s_auto_date.load());
 }
 
 // ---------------------------------------------------------------------------
@@ -572,9 +592,9 @@ HANDLE ha = CreateFileA(ads.c_str(), GENERIC_WRITE,
                         nullptr, CREATE_ALWAYS,
                         FILE_ATTRIBUTE_NORMAL, nullptr);
 if (ha == INVALID_HANDLE_VALUE) return;
-uint8_t flags[3] = {OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE};
+uint8_t flags[4] = {OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE, OPP_STATUS_NONE};
 DWORD w;
-WriteFile(ha, flags, 3, &w, nullptr);
+WriteFile(ha, flags, 4, &w, nullptr);
 CloseHandle(ha);
 }
 
@@ -630,6 +650,20 @@ void mp_set_auto_names(int on)
 	        on ? "ON" : "OFF");
 }
 
+int mp_get_auto_date(void)
+{
+	return s_auto_date.load() ? 1 : 0;
+}
+
+void mp_set_auto_date(int on)
+{
+	s_auto_date.store(on != 0);
+	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoDate", on != 0);
+	config_save_safe(opp_config(), "tmp", nullptr);
+	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-date: %s",
+	        on ? "ON" : "OFF");
+}
+
 void mp_on_recording_started(void)
 {
 std::string path = get_recording_path();
@@ -674,9 +708,11 @@ void mp_on_obs_loaded(void)
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers", true);
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim",    true);
 		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoNames",   true);
+		config_set_default_bool(cfg, OPP_CONFIG_SECTION, "AutoDate",    true);
 		s_auto_markers.store(config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoMarkers"));
 		s_auto_trim.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoTrim"));
 		s_auto_names.store(  config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoNames"));
+		s_auto_date.store(   config_get_bool(cfg, OPP_CONFIG_SECTION, "AutoDate"));
 	}
 
 // No separate txt file needed — crash survivors are MP4s in the rec folder

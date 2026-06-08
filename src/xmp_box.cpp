@@ -440,9 +440,9 @@ static int64_t find_obps_off(const uint8_t *moov_buf, uint32_t moov_sz,
 // Build udta inner payload with OBPS replaced/added (other children preserved).
 static std::vector<uint8_t>
 build_udta_with_obps(const uint8_t *udta_inner, size_t udta_inner_len,
-                     uint8_t trim_st, uint8_t markers_st, uint8_t names_st)
+                     uint8_t trim_st, uint8_t markers_st, uint8_t names_st, uint8_t date_st)
 {
-	uint8_t              pl[4] = {trim_st, markers_st, names_st, 0};
+	uint8_t              pl[4] = {trim_st, markers_st, names_st, date_st};
 	std::vector<uint8_t> obps_box =
 		make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
 
@@ -491,9 +491,10 @@ static bool read_moov_only(HANDLE h, int64_t *moov_off, uint32_t *moov_sz,
 }
 
 bool xmp_read_status(const std::string &mp4_path,
-                     uint8_t *trim_st, uint8_t *markers_st, uint8_t *names_st)
+                     uint8_t *trim_st, uint8_t *markers_st,
+                     uint8_t *names_st, uint8_t *date_st)
 {
-	*trim_st = *markers_st = *names_st = OPP_STATUS_NONE;
+	*trim_st = *markers_st = *names_st = *date_st = OPP_STATUS_NONE;
 
 	// --- Fast path: NTFS Alternate Data Stream ---
 	std::string ads = mp4_path + ":obs-pp";
@@ -502,13 +503,14 @@ bool xmp_read_status(const std::string &mp4_path,
 	                        nullptr, OPEN_EXISTING,
 	                        FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (ha != INVALID_HANDLE_VALUE) {
-		uint8_t flags[3] = {}; DWORD got = 0;
-		ReadFile(ha, flags, 3, &got, nullptr);
+		uint8_t flags[4] = {}; DWORD got = 0;
+		ReadFile(ha, flags, 4, &got, nullptr);
 		CloseHandle(ha);
 		if (got >= 2) {
 			*trim_st    = flags[0];
 			*markers_st = flags[1];
 			*names_st   = (got >= 3) ? flags[2] : OPP_STATUS_NONE;
+			*date_st    = (got >= 4) ? flags[3] : OPP_STATUS_NONE;
 			return true;
 		}
 	}
@@ -528,22 +530,24 @@ bool xmp_read_status(const std::string &mp4_path,
 	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
 	if (status_off < 0) { CloseHandle(h); return false; }
 
-	uint8_t flags[3] = {}; DWORD got2 = 0;
+	uint8_t flags[4] = {}; DWORD got2 = 0;
 	LARGE_INTEGER li{}; li.QuadPart = status_off;
 	SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
-	ReadFile(h, flags, 3, &got2, nullptr);
+	ReadFile(h, flags, 4, &got2, nullptr);
 	CloseHandle(h);
 	if (got2 < 2) return false;
 	*trim_st    = flags[0];
 	*markers_st = flags[1];
 	*names_st   = (got2 >= 3) ? flags[2] : OPP_STATUS_NONE;
+	*date_st    = (got2 >= 4) ? flags[3] : OPP_STATUS_NONE;
 	return true;
 }
 
 bool xmp_write_status(const std::string &mp4_path,
-                      uint8_t trim_st, uint8_t markers_st, uint8_t names_st)
+                      uint8_t trim_st, uint8_t markers_st,
+                      uint8_t names_st, uint8_t date_st)
 {
-	uint8_t flags[3] = {trim_st, markers_st, names_st};
+	uint8_t flags[4] = {trim_st, markers_st, names_st, date_st};
 
 	// --- Always write ADS (works before moov exists, O(1) seek+write) ---
 	{
@@ -552,7 +556,7 @@ bool xmp_write_status(const std::string &mp4_path,
 		                        FILE_SHARE_READ, nullptr,
 		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (ha != INVALID_HANDLE_VALUE) {
-			DWORD w; WriteFile(ha, flags, 3, &w, nullptr);
+			DWORD w; WriteFile(ha, flags, 4, &w, nullptr);
 			CloseHandle(ha);
 		}
 	}
@@ -569,10 +573,10 @@ bool xmp_write_status(const std::string &mp4_path,
 		CloseHandle(h); return true; // no moov yet (recording in progress), ok
 	}
 
-	// If OBPS already exists: 3-byte in-place write.
+	// If OBPS already exists: 4-byte in-place write.
 	int64_t status_off = find_obps_off(mbuf.data(), moov_sz, moov_off);
 	if (status_off >= 0) {
-		file_write_at(h, status_off, flags, 3);
+		file_write_at(h, status_off, flags, 4);
 		CloseHandle(h); return true;
 	}
 
@@ -583,9 +587,9 @@ bool xmp_write_status(const std::string &mp4_path,
 		new_udta_inner = build_udta_with_obps(
 			mbuf.data() + udta.offset + 8,
 			(size_t)udta.total_size - 8,
-			trim_st, markers_st, names_st);
+			trim_st, markers_st, names_st, date_st);
 	} else {
-		uint8_t pl[4] = {trim_st, markers_st, names_st, 0};
+		uint8_t pl[4] = {trim_st, markers_st, names_st, date_st};
 		new_udta_inner = make_box("OBPS", std::vector<uint8_t>(pl, pl + 4));
 	}
 	std::vector<uint8_t> new_udta  = make_box("udta", new_udta_inner);
@@ -1109,5 +1113,307 @@ bool xmp_write_hdlr_names(const std::string &mp4_path)
 		            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 	}
 
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// xmp_write_creation_date
+// ---------------------------------------------------------------------------
+// Reads the creation_time field from the mvhd box (set by OBS to the
+// wall-clock start time), converts it to ISO 8601, and writes it into
+// moov/udta/meta/ilst/©day so Premiere Pro shows the correct date.
+// Works on any existing OBS hybrid_mp4 recording — no capture needed.
+// ---------------------------------------------------------------------------
+
+#include <ctime>
+
+// Convert Mac epoch (1904-01-01) to ISO 8601 UTC string.
+static std::string mac_time_to_iso8601(uint64_t mac_secs)
+{
+	const uint64_t MAC_TO_UNIX = 2082844800ULL;
+	if (mac_secs < MAC_TO_UNIX) return {};
+	time_t unix_t = (time_t)(mac_secs - MAC_TO_UNIX);
+	struct tm t;
+#if defined(_WIN32)
+	if (gmtime_s(&t, &unix_t) != 0) return {};
+#else
+	if (!gmtime_r(&unix_t, &t)) return {};
+#endif
+	char buf[32];
+	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &t);
+	return buf;
+}
+
+// Build an iTunes-style ©day box (0xA9 + "day") with a data sub-box.
+static std::vector<uint8_t> make_cday_box(const std::string &iso8601)
+{
+	// data box: [size][4 "data"][4 type=1 UTF-8][4 locale=0][string]
+	std::vector<uint8_t> data_payload;
+	data_payload.push_back(0); data_payload.push_back(0);
+	data_payload.push_back(0); data_payload.push_back(1); // type = UTF-8
+	data_payload.push_back(0); data_payload.push_back(0);
+	data_payload.push_back(0); data_payload.push_back(0); // locale = 0
+	for (char c : iso8601) data_payload.push_back((uint8_t)c);
+	auto data_box = make_box("data", data_payload);
+
+	// ©day key: 0xA9 'd' 'a' 'y'
+	uint32_t total = 8 + (uint32_t)data_box.size();
+	std::vector<uint8_t> box;
+	box.push_back((total >> 24) & 0xFF); box.push_back((total >> 16) & 0xFF);
+	box.push_back((total >>  8) & 0xFF); box.push_back( total        & 0xFF);
+	box.push_back(0xA9); box.push_back('d'); box.push_back('a'); box.push_back('y');
+	box.insert(box.end(), data_box.begin(), data_box.end());
+	return box;
+}
+
+// Rebuild an ilst payload: drop existing ©day, append new one.
+static std::vector<uint8_t>
+rebuild_ilst(const uint8_t *ilst, uint32_t ilst_sz, const std::vector<uint8_t> &cday)
+{
+	std::vector<uint8_t> out;
+	size_t p = 8; // skip ilst header
+	while (p + 8 <= ilst_sz) {
+		uint32_t csz = u32be(ilst + p);
+		if (csz < 8 || p + csz > ilst_sz) break;
+		// Skip existing ©day (0xA9 'd' 'a' 'y')
+		bool is_cday = (ilst[p+4] == 0xA9 && ilst[p+5] == 'd' &&
+		                ilst[p+6] == 'a'  && ilst[p+7] == 'y');
+		if (!is_cday)
+			out.insert(out.end(), ilst + p, ilst + p + csz);
+		p += csz;
+	}
+	out.insert(out.end(), cday.begin(), cday.end());
+	return out;
+}
+
+bool xmp_write_creation_date(const std::string &mp4_path)
+{
+	HANDLE h = CreateFileA(mp4_path.c_str(), GENERIC_READ | GENERIC_WRITE,
+	                       FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+	                       FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE) return false;
+
+	int64_t              moov_off; uint32_t moov_sz;
+	std::vector<uint8_t> mbuf;
+	if (!read_moov_only(h, &moov_off, &moov_sz, &mbuf)) {
+		CloseHandle(h); return false;
+	}
+	const uint8_t *moov = mbuf.data();
+
+	// --- Read creation_time from mvhd ---
+	std::string iso_date;
+	{
+		size_t p = 8;
+		while (p + 8 <= moov_sz) {
+			uint32_t sz = u32be(moov + p);
+			if (sz < 8 || p + sz > moov_sz) break;
+			if (type_eq(moov + p, "mvhd") && sz >= 28) {
+				uint8_t ver = moov[p + 8];
+				uint64_t mac_time = (ver == 1 && sz >= 36)
+				                  ? u64be(moov + p + 12)
+				                  : (uint64_t)u32be(moov + p + 12);
+				iso_date = mac_time_to_iso8601(mac_time);
+				break;
+			}
+			p += sz;
+		}
+	}
+	if (iso_date.empty()) { CloseHandle(h); return false; }
+
+	auto cday_box = make_cday_box(iso_date);
+
+	// --- Rebuild moov: udta → meta → ilst with ©day ---
+	std::vector<uint8_t> new_moov_children;
+	bool found_udta = false;
+
+	size_t pos = 8;
+	while (pos + 8 <= moov_sz) {
+		uint32_t sz = u32be(moov + pos);
+		if (sz < 8 || pos + sz > moov_sz) break;
+
+		if (type_eq(moov + pos, "udta")) {
+			found_udta = true;
+			const uint8_t *udta = moov + pos;
+
+			// Rebuild udta: find/create meta
+			std::vector<uint8_t> new_udta_children;
+			bool found_meta = false;
+			size_t up = 8;
+			while (up + 8 <= sz) {
+				uint32_t usz = u32be(udta + up);
+				if (usz < 8 || up + usz > sz) break;
+
+				if (type_eq(udta + up, "meta")) {
+					found_meta = true;
+					const uint8_t *meta = udta + up;
+					// meta has 4-byte version/flags before children
+					size_t meta_children_start = 12;
+
+					// Rebuild meta: find/create ilst
+					std::vector<uint8_t> new_meta_children(
+					    meta + 8, meta + 12); // keep ver/flags
+					bool found_ilst = false;
+					size_t mp = meta_children_start;
+					while (mp + 8 <= usz) {
+						uint32_t msz = u32be(meta + mp);
+						if (msz < 8 || mp + msz > usz) break;
+						if (type_eq(meta + mp, "ilst")) {
+							found_ilst = true;
+							auto new_ilst_children = rebuild_ilst(
+							    meta + mp, msz, cday_box);
+							auto new_ilst = make_box("ilst", new_ilst_children);
+							new_meta_children.insert(new_meta_children.end(),
+							    new_ilst.begin(), new_ilst.end());
+						} else {
+							new_meta_children.insert(new_meta_children.end(),
+							    meta + mp, meta + mp + msz);
+						}
+						mp += msz;
+					}
+					if (!found_ilst) {
+						// Create ilst with just ©day
+						auto new_ilst = make_box("ilst", cday_box);
+						new_meta_children.insert(new_meta_children.end(),
+						    new_ilst.begin(), new_ilst.end());
+					}
+					// Build new meta box (size + "meta" + children)
+					uint32_t new_meta_sz = 8 + (uint32_t)new_meta_children.size();
+					std::vector<uint8_t> new_meta_box;
+					new_meta_box.push_back((new_meta_sz>>24)&0xFF);
+					new_meta_box.push_back((new_meta_sz>>16)&0xFF);
+					new_meta_box.push_back((new_meta_sz>> 8)&0xFF);
+					new_meta_box.push_back( new_meta_sz     &0xFF);
+					new_meta_box.push_back('m'); new_meta_box.push_back('e');
+					new_meta_box.push_back('t'); new_meta_box.push_back('a');
+					new_meta_box.insert(new_meta_box.end(),
+					    new_meta_children.begin(), new_meta_children.end());
+					new_udta_children.insert(new_udta_children.end(),
+					    new_meta_box.begin(), new_meta_box.end());
+				} else {
+					new_udta_children.insert(new_udta_children.end(),
+					    udta + up, udta + up + usz);
+				}
+				up += usz;
+			}
+			if (!found_meta) {
+				// Create meta/hdlr/ilst from scratch
+				std::vector<uint8_t> meta_children;
+				// ver/flags = 0
+				meta_children.push_back(0); meta_children.push_back(0);
+				meta_children.push_back(0); meta_children.push_back(0);
+				// hdlr: mdir/appl
+				uint8_t hdlr_pl[21] = {0,0,0,0, 0,0,0,0,
+				                       'm','d','i','r',
+				                       0,0,0,0, 0,0,0,0, 0};
+				auto hdlr = make_box("hdlr", std::vector<uint8_t>(hdlr_pl, hdlr_pl+21));
+				meta_children.insert(meta_children.end(), hdlr.begin(), hdlr.end());
+				auto new_ilst = make_box("ilst", cday_box);
+				meta_children.insert(meta_children.end(), new_ilst.begin(), new_ilst.end());
+				uint32_t new_meta_sz = 8 + (uint32_t)meta_children.size();
+				std::vector<uint8_t> new_meta_box;
+				new_meta_box.push_back((new_meta_sz>>24)&0xFF);
+				new_meta_box.push_back((new_meta_sz>>16)&0xFF);
+				new_meta_box.push_back((new_meta_sz>> 8)&0xFF);
+				new_meta_box.push_back( new_meta_sz     &0xFF);
+				new_meta_box.push_back('m'); new_meta_box.push_back('e');
+				new_meta_box.push_back('t'); new_meta_box.push_back('a');
+				new_meta_box.insert(new_meta_box.end(), meta_children.begin(), meta_children.end());
+				new_udta_children.insert(new_udta_children.end(),
+				    new_meta_box.begin(), new_meta_box.end());
+			}
+			auto new_udta = make_box("udta", new_udta_children);
+			new_moov_children.insert(new_moov_children.end(),
+			    new_udta.begin(), new_udta.end());
+		} else {
+			new_moov_children.insert(new_moov_children.end(),
+			    moov + pos, moov + pos + sz);
+		}
+		pos += sz;
+	}
+
+	if (!found_udta) {
+		// No udta at all — copy existing moov children then append new udta
+		new_moov_children.clear();
+		size_t p2 = 8;
+		while (p2 + 8 <= moov_sz) {
+			uint32_t sz = u32be(moov + p2);
+			if (sz < 8 || p2 + sz > moov_sz) break;
+			new_moov_children.insert(new_moov_children.end(),
+			    moov + p2, moov + p2 + sz);
+			p2 += sz;
+		}
+		// Build fresh udta/meta/ilst/©day
+		std::vector<uint8_t> meta_children;
+		meta_children.push_back(0); meta_children.push_back(0);
+		meta_children.push_back(0); meta_children.push_back(0);
+		uint8_t hdlr_pl[21] = {0,0,0,0, 0,0,0,0,
+		                       'm','d','i','r',
+		                       0,0,0,0, 0,0,0,0, 0};
+		auto hdlr = make_box("hdlr", std::vector<uint8_t>(hdlr_pl, hdlr_pl+21));
+		meta_children.insert(meta_children.end(), hdlr.begin(), hdlr.end());
+		auto new_ilst = make_box("ilst", cday_box);
+		meta_children.insert(meta_children.end(), new_ilst.begin(), new_ilst.end());
+		uint32_t new_meta_sz = 8 + (uint32_t)meta_children.size();
+		std::vector<uint8_t> new_meta_box;
+		new_meta_box.push_back((new_meta_sz>>24)&0xFF);
+		new_meta_box.push_back((new_meta_sz>>16)&0xFF);
+		new_meta_box.push_back((new_meta_sz>> 8)&0xFF);
+		new_meta_box.push_back( new_meta_sz     &0xFF);
+		new_meta_box.push_back('m'); new_meta_box.push_back('e');
+		new_meta_box.push_back('t'); new_meta_box.push_back('a');
+		new_meta_box.insert(new_meta_box.end(), meta_children.begin(), meta_children.end());
+		auto new_udta = make_box("udta", new_meta_box);
+		new_moov_children.insert(new_moov_children.end(),
+		    new_udta.begin(), new_udta.end());
+	}
+
+	std::vector<uint8_t> new_moov = make_box("moov", new_moov_children);
+	int64_t fsize       = file_size(h);
+	bool    moov_at_end = (moov_off + (int64_t)moov_sz >= fsize - 8);
+	if (moov_at_end) {
+		file_write_at(h, moov_off, new_moov.data(), (DWORD)new_moov.size());
+		LARGE_INTEGER li{}; li.QuadPart = moov_off + (int64_t)new_moov.size();
+		SetFilePointerEx(h, li, nullptr, FILE_BEGIN);
+		SetEndOfFile(h);
+		CloseHandle(h);
+	} else {
+		CloseHandle(h);
+		std::string tmp = mp4_path + ".opp_tmp";
+		HANDLE hr = CreateFileA(mp4_path.c_str(), GENERIC_READ,
+		                        FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+		                        FILE_ATTRIBUTE_NORMAL, nullptr);
+		HANDLE hw = CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+		                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hr == INVALID_HANDLE_VALUE || hw == INVALID_HANDLE_VALUE) {
+			if (hr != INVALID_HANDLE_VALUE) CloseHandle(hr);
+			if (hw != INVALID_HANDLE_VALUE) CloseHandle(hw);
+			DeleteFileA(tmp.c_str());
+			return false;
+		}
+		std::vector<uint8_t> buf(1 << 20);
+		LARGE_INTEGER li{}; SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+		int64_t copied = 0;
+		while (copied < fsize) {
+			int64_t remaining = fsize - copied;
+			if (copied == moov_off) {
+				li.QuadPart = moov_off + moov_sz;
+				SetFilePointerEx(hr, li, nullptr, FILE_BEGIN);
+				copied = moov_off + moov_sz; continue;
+			}
+			DWORD to_read = (DWORD)(std::min)((int64_t)buf.size(), remaining);
+			if (copied < moov_off && copied + to_read > moov_off)
+				to_read = (DWORD)(moov_off - copied);
+			DWORD got = 0, written = 0;
+			ReadFile(hr, buf.data(), to_read, &got, nullptr);
+			if (!got) break;
+			WriteFile(hw, buf.data(), got, &written, nullptr);
+			copied += got;
+		}
+		DWORD ww = 0;
+		WriteFile(hw, new_moov.data(), (DWORD)new_moov.size(), &ww, nullptr);
+		CloseHandle(hr); CloseHandle(hw);
+		MoveFileExA(tmp.c_str(), mp4_path.c_str(),
+		            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	}
 	return true;
 }

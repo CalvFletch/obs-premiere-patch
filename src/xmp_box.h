@@ -26,18 +26,25 @@ bool xmp_fix_tkhd_durations(const std::string &mp4_path);
 // Returns true if at least one name was written.
 bool xmp_write_hdlr_names(const std::string &mp4_path);
 
+// Write recording creation date into moov/udta/meta/ilst/©day.
+// Reads creation_time from the mvhd box (already set by OBS) and converts
+// it to ISO 8601. Returns true on success.
+bool xmp_write_creation_date(const std::string &mp4_path);
+
 // Patch status values written to ADS (:obs-pp) and moov/udta/OBPS.
-// Each patch (trim, markers, names) uses one byte independently.
+// Each patch (trim, markers, names, date) uses one byte independently.
 #define OPP_STATUS_NONE      00  // not yet started
 #define OPP_STATUS_PATCHING  10  // started, not finished (crash here → retry)
 #define OPP_STATUS_DONE      11  // finished successfully
 
-// Read status bytes [trim, markers, names] from ADS (fast) or OBPS box (fallback).
+// Read status bytes [trim, markers, names, date] from ADS (fast) or OBPS box (fallback).
 // Returns false if neither source exists (old/non-OBS file → treat as unknown).
 bool xmp_read_status(const std::string &mp4_path,
-                     uint8_t *trim_st, uint8_t *markers_st, uint8_t *names_st);
+                     uint8_t *trim_st, uint8_t *markers_st,
+                     uint8_t *names_st, uint8_t *date_st);
 
-// Write status bytes [trim, markers, names].  ADS is always written (works before moov).
+// Write status bytes [trim, markers, names, date].  ADS is always written (works before moov).
 // OBPS in moov is updated if it already exists, or injected if moov is present.
 bool xmp_write_status(const std::string &mp4_path,
-                      uint8_t trim_st, uint8_t markers_st, uint8_t names_st);
+                      uint8_t trim_st, uint8_t markers_st,
+                      uint8_t names_st, uint8_t date_st);
