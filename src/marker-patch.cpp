@@ -430,49 +430,54 @@ patch_mp4(path, true, true);
 
 static std::string pick_folder()
 {
-std::string      result;
-IFileOpenDialog *pfd = nullptr;
+	std::string      result;
+	IFileOpenDialog *pfd = nullptr;
 
-if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL,
-                             CLSCTX_INPROC_SERVER,
-                             IID_PPV_ARGS(&pfd))))
-return result;
+	if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL,
+	                             CLSCTX_INPROC_SERVER,
+	                             IID_PPV_ARGS(&pfd))))
+		return result;
 
-// Show MP4s so user can verify they're in the right folder,
-// but still picking a folder (not the file itself).
-COMDLG_FILTERSPEC filter = {L"MP4 Files (*.mp4)", L"*.mp4"};
-pfd->SetFileTypes(1, &filter);
-pfd->SetFileTypeIndex(1);
+	// Let user pick any MP4 in the target folder; we derive the folder
+	// from it. This way all files are visible while browsing.
+	COMDLG_FILTERSPEC filter = {L"MP4 Files (*.mp4)", L"*.mp4"};
+	pfd->SetFileTypes(1, &filter);
+	pfd->SetFileTypeIndex(1);
 
-DWORD opts = 0;
-pfd->GetOptions(&opts);
-pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST |
-                FOS_FORCEFILESYSTEM);
-pfd->SetTitle(L"Select folder containing recordings");
+	DWORD opts = 0;
+	pfd->GetOptions(&opts);
+	pfd->SetOptions((opts & ~FOS_PICKFOLDERS) | FOS_PATHMUSTEXIST |
+	                FOS_FORCEFILESYSTEM);
+	pfd->SetTitle(L"Select any recording in the folder to patch");
 
-if (SUCCEEDED(pfd->Show(NULL))) {
-IShellItem *item = nullptr;
-if (SUCCEEDED(pfd->GetResult(&item))) {
-PWSTR wpath = nullptr;
-if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
-                                   &wpath))) {
-int n = WideCharToMultiByte(CP_UTF8, 0, wpath,
-                            -1, NULL, 0, NULL,
-                            NULL);
-if (n > 0) {
-std::vector<char> buf(n);
-WideCharToMultiByte(CP_UTF8, 0, wpath,
-                    -1, buf.data(), n,
-                    NULL, NULL);
-result = buf.data();
-}
-CoTaskMemFree(wpath);
-}
-item->Release();
-}
-}
-pfd->Release();
-return result;
+	if (SUCCEEDED(pfd->Show(NULL))) {
+		IShellItem *item = nullptr;
+		if (SUCCEEDED(pfd->GetResult(&item))) {
+			PWSTR wpath = nullptr;
+			if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,
+			                                   &wpath))) {
+				int n = WideCharToMultiByte(CP_UTF8, 0, wpath,
+				                            -1, NULL, 0, NULL,
+				                            NULL);
+				if (n > 0) {
+					std::vector<char> buf(n);
+					WideCharToMultiByte(CP_UTF8, 0, wpath,
+					                    -1, buf.data(), n,
+					                    NULL, NULL);
+					std::string file = buf.data();
+					// Strip filename — return parent folder
+					auto slash = file.find_last_of("/\\");
+					result = (slash != std::string::npos)
+					         ? file.substr(0, slash)
+					         : file;
+				}
+				CoTaskMemFree(wpath);
+			}
+			item->Release();
+		}
+	}
+	pfd->Release();
+	return result;
 }
 
 static std::vector<std::string> pick_files()
