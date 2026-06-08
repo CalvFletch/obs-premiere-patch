@@ -11,8 +11,6 @@ OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
 - OBS Studio 31.x (64-bit, Windows)
 
-Chapter markers can be added during recording via **Settings → Hotkeys → Add Chapter Marker**
-
 ## Installation
 
 Download `obs-premiere-patch.dll` from [Releases](https://github.com/CalvFletch/obs-premiere-patch/releases) and copy it to:
@@ -25,14 +23,7 @@ Restart OBS.
 
 ## Usage
 
-The plugin runs automatically after every recording. Settings are in **Tools → Premiere Patch**:
-
-| Toggle | Default | Effect |
-|--------|---------|--------|
-| Auto-inject markers | On | Make chapter markers readable by Premiere Pro |
-| Auto A/V trim | On | Fix A/V sync on each recording |
-
-Manual fix actions are also available in the same submenu for processing existing files or folders.
+The plugin runs automatically after every recording. Settings and manual tools are in **Tools → Premiere Patch**:
 
 ## Building
 
