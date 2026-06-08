@@ -23,10 +23,8 @@ void mp_set_auto_markers(int on);
 void mp_set_auto_trim(int on);
 
 /* Manual fix actions (each shows a folder or file picker dialog) */
-void mp_fix_folder_markers(void);
-void mp_fix_file_markers(void);
-void mp_fix_folder_trim(void);
-void mp_fix_file_trim(void);
+void mp_fix_folder(void);
+void mp_fix_file(void);
 
 #ifdef __cplusplus
 }

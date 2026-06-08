@@ -387,9 +387,9 @@ FindClose(hd);
 // Mode C: manual fix workers
 // ---------------------------------------------------------------------------
 
-static void fix_folder_markers_worker(std::string folder)
+static void fix_folder_worker(std::string folder)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder (markers): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder: %s",
         folder.c_str());
 
 std::vector<std::string> mp4s, mkvs;
@@ -397,49 +397,24 @@ scan_recursive(folder, ".mp4", mp4s);
 scan_recursive(folder, ".mkv", mkvs);
 
 for (const auto &f : mp4s)
-patch_mp4(f, true, false);
+patch_mp4(f, true, true);
 
 for (const auto &mkv : mkvs) {
 std::string mp4 = mkv.substr(0, mkv.size() - 4) + ".mp4";
 if (av_remux_to_mp4(mkv, mp4))
-patch_mp4(mp4, true, false);
+patch_mp4(mp4, true, true);
 }
 
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Fix folder (markers) done: "
-        "%zu MP4 + %zu MKV",
+        "[obs-premiere-patch] Fix folder done: %zu MP4 + %zu MKV",
         mp4s.size(), mkvs.size());
 }
 
-static void fix_file_markers_worker(std::string path)
+static void fix_file_worker(std::string path)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix file (markers): %s",
+obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
         path.c_str());
-patch_mp4(path, true, false);
-}
-
-static void fix_folder_trim_worker(std::string folder)
-{
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder (A/V trim): %s",
-        folder.c_str());
-
-std::vector<std::string> mp4s;
-scan_recursive(folder, ".mp4", mp4s);
-
-for (const auto &f : mp4s)
-patch_mp4(f, false, true);
-
-obs_log(LOG_INFO,
-        "[obs-premiere-patch] Fix folder (A/V trim) done: "
-        "%zu file(s)",
-        mp4s.size());
-}
-
-static void fix_file_trim_worker(std::string path)
-{
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix file (A/V trim): %s",
-        path.c_str());
-patch_mp4(path, false, true);
+patch_mp4(path, true, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -656,38 +631,18 @@ startup_scan(rec_folder);
 }).detach();
 }
 
-void mp_fix_folder_markers(void)
+void mp_fix_folder(void)
 {
 std::string folder = pick_folder();
 if (folder.empty())
 return;
-std::thread([folder]() {
-fix_folder_markers_worker(folder);
-}).detach();
+std::thread([folder]() { fix_folder_worker(folder); }).detach();
 }
 
-void mp_fix_file_markers(void)
+void mp_fix_file(void)
 {
 std::string path = pick_file();
 if (path.empty())
 return;
-std::thread([path]() { fix_file_markers_worker(path); }).detach();
-}
-
-void mp_fix_folder_trim(void)
-{
-std::string folder = pick_folder();
-if (folder.empty())
-return;
-std::thread([folder]() {
-fix_folder_trim_worker(folder);
-}).detach();
-}
-
-void mp_fix_file_trim(void)
-{
-std::string path = pick_file();
-if (path.empty())
-return;
-std::thread([path]() { fix_file_trim_worker(path); }).detach();
+std::thread([path]() { fix_file_worker(path); }).detach();
 }

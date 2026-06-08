@@ -48,29 +48,18 @@ void mp_setup_menu(void)
 	sub->addSeparator();
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
-	QAction *act_folder_markers =
-		sub->addAction("Fix Folder for Markers...");
-	QAction *act_file_markers = sub->addAction("Fix File for Markers...");
-
-	sub->addSeparator();
-
-	QAction *act_folder_trim =
-		sub->addAction("Fix Folder for A/V Trim...");
-	QAction *act_file_trim = sub->addAction("Fix File for A/V Trim...");
+	QAction *act_folder = sub->addAction("Fix Folder...");
+	QAction *act_file   = sub->addAction("Fix File...");
 
 	// ── Connections ────────────────────────────────────────────────────────
 	QObject::connect(tog_markers, &QAction::toggled,
 	                 [](bool on) { mp_set_auto_markers(on ? 1 : 0); });
 	QObject::connect(tog_trim, &QAction::toggled,
 	                 [](bool on) { mp_set_auto_trim(on ? 1 : 0); });
-	QObject::connect(act_folder_markers, &QAction::triggered,
-	                 []() { mp_fix_folder_markers(); });
-	QObject::connect(act_file_markers, &QAction::triggered,
-	                 []() { mp_fix_file_markers(); });
-	QObject::connect(act_folder_trim, &QAction::triggered,
-	                 []() { mp_fix_folder_trim(); });
-	QObject::connect(act_file_trim, &QAction::triggered,
-	                 []() { mp_fix_file_trim(); });
+	QObject::connect(act_folder, &QAction::triggered,
+	                 []() { mp_fix_folder(); });
+	QObject::connect(act_file, &QAction::triggered,
+	                 []() { mp_fix_file(); });
 
 	// ── Append to Tools menu ───────────────────────────────────────────────
 	tools_menu->addSeparator();
