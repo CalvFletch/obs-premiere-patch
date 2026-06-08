@@ -119,7 +119,7 @@ void mp_setup_menu(void)
 
 	// ── Manual fixes ───────────────────────────────────────────────────────
 	QAction *act_folder = sub->addAction("Patch Folder...");
-	act_folder->setToolTip("Choose any recording in a folder — all MP4s (and MKVs) in that folder\nwill be patched with the options you select.");
+	act_folder->setToolTip("Select a folder — all MP4s (and MKVs) inside will be patched with the options you select.");
 	QAction *act_file   = sub->addAction("Patch File...");
 	act_file->setToolTip("Choose one or more MP4 files to patch with the options you select.");
 

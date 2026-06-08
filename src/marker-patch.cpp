@@ -235,7 +235,7 @@ if (cfr_st != OPP_STATUS_DONE) {
 write_cfr_status(path, OPP_STATUS_PATCHING);
 bool ok = xmp_normalize_stts(path);
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] CFR normalize %s: %s",
+        "CFR normalize %s: %s",
         ok ? "done" : "skipped (already CFR or non-standard FPS)",
         path.c_str());
 write_cfr_status(path, OPP_STATUS_DONE);
@@ -247,7 +247,7 @@ if (do_av_trim && trim_st != OPP_STATUS_DONE) {
 xmp_write_status(path, OPP_STATUS_PATCHING, markers_st, names_st, date_st);
 if (xmp_fix_tkhd_durations(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Duration fixed: %s",
+        "Duration fixed: %s",
         path.c_str());
 trim_st = OPP_STATUS_DONE;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
@@ -260,13 +260,13 @@ names_st = OPP_STATUS_PATCHING;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_hdlr_names(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Track names written: %s",
+        "Track names written: %s",
         path.c_str());
 names_st = OPP_STATUS_DONE;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 } else {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Track names N/A (no source data): %s",
+        "Track names N/A (no source data): %s",
         path.c_str());
 names_st = OPP_STATUS_N_A;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
@@ -279,13 +279,13 @@ date_st = OPP_STATUS_PATCHING;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 if (xmp_write_creation_date(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Creation date written: %s",
+        "Creation date written: %s",
         path.c_str());
 date_st = OPP_STATUS_DONE;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
 } else {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Creation date N/A (no source data): %s",
+        "Creation date N/A (no source data): %s",
         path.c_str());
 date_st = OPP_STATUS_N_A;
 xmp_write_status(path, trim_st, markers_st, names_st, date_st);
@@ -298,13 +298,13 @@ return;
 // Markers: status box wins; fall back to XMP scan for old files.
 if (markers_st == OPP_STATUS_DONE) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Markers already done (status), skipping: %s",
+        "Markers already done (status), skipping: %s",
         path.c_str());
 return;
 }
 if (xmp_has_ours(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Already patched (XMP), skipping: %s",
+        "Already patched (XMP), skipping: %s",
         path.c_str());
 return;
 }
@@ -312,7 +312,7 @@ return;
 auto chapters = av_get_chapters(path);
 if (chapters.empty()) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] No chapters in %s -- skipping",
+        "No chapters in %s -- skipping",
         path.c_str());
 return;
 }
@@ -323,13 +323,13 @@ std::string xmp = build_xmp(chapters, ts);
 xmp_write_status(path, trim_st, OPP_STATUS_PATCHING, names_st, date_st);
 if (xmp_inject(path, xmp)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Injected %zu XMP marker(s) "
+        "Injected %zu XMP marker(s) "
         "(timescale=%.0f) into %s",
         chapters.size(), ts, path.c_str());
 xmp_write_status(path, trim_st, OPP_STATUS_DONE, names_st, date_st);
 } else {
 obs_log(LOG_ERROR,
-        "[obs-premiere-patch] XMP injection failed for %s",
+        "XMP injection failed for %s",
         path.c_str());
 }
 }
@@ -340,7 +340,7 @@ obs_log(LOG_ERROR,
 
 static void patch_recording(std::string path)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Monitoring: %s", path.c_str());
+obs_log(LOG_INFO, "Monitoring: %s", path.c_str());
 wait_for_stable(path, 60);
 // ADS already stamped {00,00,00} at recording start.
 // Now that moov exists, write_status also injects OBPS into moov.
@@ -369,7 +369,7 @@ return file;
 
 static void startup_scan(const std::string &folder)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Startup scan: %s",
+obs_log(LOG_INFO, "Startup scan: %s",
         folder.c_str());
 
 // Remux orphaned MKVs (no matching MP4) and patch them
@@ -394,7 +394,7 @@ FindClose(hf);
 
 if (!orphans.empty()) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Startup scan: "
+        "Startup scan: "
         "%zu orphaned MKV(s) found",
         orphans.size());
 for (const auto &mkv : orphans) {
@@ -402,12 +402,12 @@ std::string mp4 = mkv.substr(
 0, mkv.size() - 4) + ".mp4";
 if (av_remux_to_mp4(mkv, mp4)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Remuxed: %s",
+        "Remuxed: %s",
         mp4.c_str());
 patch_mp4(mp4, true, true, s_auto_names.load(), s_auto_date.load(), s_auto_cfr.load());
 } else {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Remux failed: %s",
+        "Remux failed: %s",
         mkv.c_str());
 }
 }
@@ -445,12 +445,12 @@ patched++;
 }
 if (patched > 0)
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Startup scan: "
+        "Startup scan: "
         "patched %d file(s)",
         patched);
 }
 
-obs_log(LOG_INFO, "[obs-premiere-patch] Startup scan complete");
+obs_log(LOG_INFO, "Startup scan complete");
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +490,7 @@ FindClose(hd);
 
 static void fix_folder_worker(std::string folder, PatchOpts opts, PatchDoneCallback cb)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix folder: %s",
+obs_log(LOG_INFO, "Fix folder: %s",
         folder.c_str());
 
 std::vector<std::string> mp4s, mkvs;
@@ -520,14 +520,14 @@ for (const auto &mkv : mkvs) {
 }
 
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Fix folder done: %d changed",
+        "Fix folder done: %d changed",
         changed);
 if (cb) cb(changed);
 }
 
 static void fix_file_worker(std::string path, PatchOpts opts, PatchDoneCallback cb)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] Fix file: %s",
+obs_log(LOG_INFO, "Fix file: %s",
         path.c_str());
 uint8_t t=0,m=0,n=0,d=0;
 xmp_read_status(path, &t, &m, &n, &d);
@@ -663,12 +663,12 @@ CloseHandle(ha);
 
 void mp_start(void)
 {
-	obs_log(LOG_INFO, "[obs-premiere-patch] started");
+	obs_log(LOG_INFO, "started");
 }
 
 void mp_stop(void)
 {
-obs_log(LOG_INFO, "[obs-premiere-patch] stopped");
+obs_log(LOG_INFO, "stopped");
 }
 
 int mp_get_auto_markers(void)
@@ -686,7 +686,7 @@ void mp_set_auto_markers(int on)
 	s_auto_markers.store(on != 0);
 	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoMarkers", on != 0);
 	config_save_safe(opp_config(), "tmp", nullptr);
-	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-markers: %s",
+	obs_log(LOG_INFO, "Auto-markers: %s",
 	        on ? "ON" : "OFF");
 }
 
@@ -695,7 +695,7 @@ void mp_set_auto_trim(int on)
 	s_auto_trim.store(on != 0);
 	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoTrim", on != 0);
 	config_save_safe(opp_config(), "tmp", nullptr);
-	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-trim: %s",
+	obs_log(LOG_INFO, "Auto-trim: %s",
 	        on ? "ON" : "OFF");
 }
 
@@ -709,7 +709,7 @@ void mp_set_auto_names(int on)
 	s_auto_names.store(on != 0);
 	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoNames", on != 0);
 	config_save_safe(opp_config(), "tmp", nullptr);
-	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-names: %s",
+	obs_log(LOG_INFO, "Auto-names: %s",
 	        on ? "ON" : "OFF");
 }
 
@@ -723,7 +723,7 @@ void mp_set_auto_date(int on)
 	s_auto_date.store(on != 0);
 	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoDate", on != 0);
 	config_save_safe(opp_config(), "tmp", nullptr);
-	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-date: %s",
+	obs_log(LOG_INFO, "Auto-date: %s",
 	        on ? "ON" : "OFF");
 }
 
@@ -737,7 +737,7 @@ void mp_set_auto_cfr(int on)
 	s_auto_cfr.store(on != 0);
 	config_set_bool(opp_config(), OPP_CONFIG_SECTION, "AutoCFR", on != 0);
 	config_save_safe(opp_config(), "tmp", nullptr);
-	obs_log(LOG_INFO, "[obs-premiere-patch] Auto-CFR: %s",
+	obs_log(LOG_INFO, "Auto-CFR: %s",
 	        on ? "ON" : "OFF");
 }
 
@@ -749,7 +749,7 @@ if (path.empty()) return;
 // This is the crash-recovery anchor: if OBS dies before recording stops,
 // the ADS {0,0,0} survives and startup_scan will detect + process the file.
 stamp_ads_pending(path);
-obs_log(LOG_INFO, "[obs-premiere-patch] Recording started (ADS stamped): %s",
+obs_log(LOG_INFO, "Recording started (ADS stamped): %s",
         path.c_str());
 }
 
@@ -758,7 +758,7 @@ void mp_on_recording_stopped(void)
 std::string path = get_recording_path();
 if (path.empty()) {
 obs_log(LOG_WARNING,
-        "[obs-premiere-patch] Could not determine recording path");
+        "Could not determine recording path");
 return;
 }
 
@@ -769,7 +769,7 @@ return s.size() >= 4 &&
 
 if (!ends_mp4(path)) {
 obs_log(LOG_INFO,
-        "[obs-premiere-patch] Not an MP4 (%s), skipping",
+        "Not an MP4 (%s), skipping",
         path.c_str());
 return;
 }

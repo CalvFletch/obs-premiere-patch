@@ -30,7 +30,7 @@ static void on_frontend_event(enum obs_frontend_event event, void *unused)
 
 bool obs_module_load(void)
 {
-	obs_log(LOG_INFO, "[obs-premiere-patch] module load");
+	obs_log(LOG_INFO, "module load");
 	obs_frontend_add_event_callback(on_frontend_event, NULL);
 	mp_setup_menu();
 	mp_start();
@@ -41,5 +41,5 @@ void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(on_frontend_event, NULL);
 	mp_stop();
-	obs_log(LOG_INFO, "[obs-premiere-patch] module unload");
+	obs_log(LOG_INFO, "module unload");
 }
