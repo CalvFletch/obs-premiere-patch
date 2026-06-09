@@ -1,4 +1,4 @@
-# obs-premiere-patch
+# OBS Premiere Patch
 
 OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
@@ -8,7 +8,7 @@ OBS plugin (Windows, 64-bit) that fixes recordings for use in Premiere Pro.
 
 Automatically translates OBS chapter markers into Premiere Pro's XMP format. Markers appear across all tracks in the timeline the moment you import the clip — no manual work required.
 
-<img src="Better2.png" width="500"/>
+<img src="Better2.png" width="350"/>
 
 ### A/V Sync Fix
 
