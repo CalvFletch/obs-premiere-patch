@@ -11,6 +11,8 @@
 !CMakePresets.json
 !LICENSE
 !README.md
+!Better.png
+!Better2.png
 
 # Exclude lock files
 *.lock.json
